@@ -6,6 +6,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { AccountDeletionStatus, SocialProvider, VerificationKind } from '@cindy/auth-client';
 
 import { useAuth } from '@/auth/AuthContext';
+import { LoginCaptchaWebView } from '@/auth/LoginCaptchaWebView';
 import { useLoginFirstLaunchLight } from '@/auth/loginFirstLaunchGate';
 import { resolveStartupSplashHandoff } from '@/auth/startupSplashContinuity';
 import {
@@ -1313,6 +1314,14 @@ export default function LoginScreen() {
           }
           onOpenTerms={() => undefined}
           onOpenPrivacy={() => undefined}
+        />
+      ) : null}
+      {/* 人机验证挑战层(global 邮箱发码前置闸):incognito WebView 装载
+          auth-server 托管的 Turnstile 页,结果回 AuthContext 挂起的发码动作。 */}
+      {auth.captchaChallenge ? (
+        <LoginCaptchaWebView
+          url={auth.captchaChallenge.url}
+          onResult={auth.resolveCaptchaChallenge}
         />
       ) : null}
     </MobileLoginHandoffStage>

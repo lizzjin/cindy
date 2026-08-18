@@ -13,6 +13,7 @@ import {
 import { AppState, Linking } from 'react-native';
 import {
   AuthApiError,
+  CAPTCHA_CHALLENGE_PAGE_PATH,
   CindyAuthClient,
   discoverSsoOrgRealm,
   parseAccountDeletionReceiptRecord,
@@ -30,6 +31,7 @@ import {
   type AccountDeletionAvailability,
   type AccountDeletionChallenge,
   type AccountDeletionStatus,
+  type CaptchaConfig,
   type LoginOutcome,
   type SocialProvider,
   type SsoOrgDiscovery,
@@ -61,7 +63,7 @@ import {
 import { syncCanaryChannelAfterAuth } from '@/auth/canaryChannelSync';
 import { ensureDeviceId } from '@/auth/deviceId';
 import { isAccessTokenExpiring } from '@/auth/jwt';
-import { getAuthLocale } from '@/auth/loginMessages';
+import { getAuthLocale, getLoginLanguage } from '@/auth/loginMessages';
 import { acquireNativeSocialCredential } from '@/auth/nativeSocial';
 import {
   matchesOAuthCallbackUrl,
@@ -179,6 +181,13 @@ export interface AuthContextValue {
   clearAuthError(): void;
   consumeAccountDeletionRestored(): void;
   dispatchLoginAction(action: MobileLoginAction): Promise<boolean>;
+  /**
+   * 登录人机验证挑战(global 邮箱发码前置闸):非空时登录页渲染 WebView Modal
+   * 装载该托管挑战页;结果经 resolveCaptchaChallenge 回到挂起的发码动作
+   * (token = 通过,null = 用户取消/挑战失败)。
+   */
+  captchaChallenge: { url: string } | null;
+  resolveCaptchaChallenge(token: string | null): void;
   completeOAuthCallback(callbackUrl: string): Promise<void>;
   logout(): Promise<void>;
   /** 认证服务已明确拒绝当前会话时，单飞执行完整本地退登。 */
@@ -215,6 +224,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       clearAuthError: () => undefined,
       consumeAccountDeletionRestored: () => undefined,
       dispatchLoginAction: async () => true,
+      captchaChallenge: null,
+      resolveCaptchaChallenge: () => undefined,
       completeOAuthCallback: async () => undefined,
       logout: async () => undefined,
       terminateSession: async () => undefined,
@@ -386,10 +397,76 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [],
   );
 
+  /* ── 登录人机验证(Turnstile 托管挑战页,global 邮箱发码前置闸)── */
+  const captchaConfigRef = useRef<CaptchaConfig | null>(null);
+  const [captchaChallenge, setCaptchaChallenge] = useState<{ url: string } | null>(null);
+  const captchaResolveRef = useRef<((token: string | null) => void) | null>(null);
+
   const updateLoginState = useCallback((next: AuthFlowState | null) => {
+    // providers.captcha 只随 identifier/realm-confirmation 步下发,发码动作发生在
+    // 后续步骤,进 ref 存续(登录流必经 identifier,ref 必然先就位);cn 构建 /
+    // 服务端未开启时字段缺席,captcha 闸整体 no-op。
+    if (next?.step === 'identifier' || next?.step === 'realm-confirmation') {
+      captchaConfigRef.current = next.providers.captcha ?? null;
+    }
     loginStateRef.current = next;
     setLoginState(next);
   }, []);
+
+  /** 登录页 WebView Modal 的结果回传口(token = 通过,null = 取消/失败)。 */
+  const resolveCaptchaChallenge = useCallback((token: string | null) => {
+    const resolve = captchaResolveRef.current;
+    captchaResolveRef.current = null;
+    setCaptchaChallenge(null);
+    resolve?.(token);
+  }, []);
+
+  /** 出题并等结果。theme 不传,托管页按 prefers-color-scheme 自适配。 */
+  const runCaptchaChallenge = useCallback((): Promise<string | null> => {
+    let base = getMobileEndpointForRealm(BUILD_AUTH_REGION, 'authApiBaseUrl');
+    while (base.endsWith('/')) base = base.slice(0, -1);
+    const url = `${base}${CAPTCHA_CHALLENGE_PAGE_PATH}?lang=${encodeURIComponent(getLoginLanguage())}`;
+    return new Promise<string | null>((resolve) => {
+      // 单飞:dispatchLoginAction 本身串行,这里不会出现并发挑战。
+      captchaResolveRef.current = resolve;
+      setCaptchaChallenge({ url });
+    });
+  }, []);
+
+  /** 发码前置闸:未启用 → 放行;启用 → 出题,取消 → 不放行(调用方不发码)。 */
+  const ensureEmailCaptchaGate = useCallback(async (): Promise<
+    { proceed: true; captchaToken?: string } | { proceed: false }
+  > => {
+    if (captchaConfigRef.current?.requiredFor.includes('email_request_code') !== true) {
+      return { proceed: true };
+    }
+    const token = await runCaptchaChallenge();
+    return token === null ? { proceed: false } : { proceed: true, captchaToken: token };
+  }, [runCaptchaChallenge]);
+
+  /**
+   * 发邮箱验证码 + 错误驱动兜底:服务端返回 CAPTCHA_REQUIRED/CAPTCHA_INVALID
+   * (providers 缓存旧于服务端开关,或 token 恰好过期)时重新出题一次后重试,
+   * 仅一次防循环;重试被取消或再失败则抛原错误走统一错误链路。
+   */
+  const requestEmailCodeWithCaptchaFallback = useCallback(
+    async (did: string, email: string, captchaToken: string | undefined): Promise<void> => {
+      try {
+        await authClientFor(did, BUILD_AUTH_REGION).requestCode('email', email, {
+          captchaToken,
+        });
+      } catch (error) {
+        const code = authErrorCode(error);
+        if (code !== 'CAPTCHA_REQUIRED' && code !== 'CAPTCHA_INVALID') throw error;
+        const retryToken = await runCaptchaChallenge();
+        if (retryToken === null) throw error;
+        await authClientFor(did, BUILD_AUTH_REGION).requestCode('email', email, {
+          captchaToken: retryToken,
+        });
+      }
+    },
+    [runCaptchaChallenge],
+  );
 
   const setToken = useCallback((token: string | null) => {
     accessTokenRef.current = token;
@@ -1078,10 +1155,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
               });
             }
             if (sole?.type === 'email_code') {
-              await authClientFor(did, BUILD_AUTH_REGION).requestCode(
-                'email',
-                email,
-              );
+              // 人机验证前置闸(覆盖 discovery→发码的自动串发路径):取消则不
+              // 串发,落 method-choice,用户可从个人行再次发起(会重新过闸)。
+              const gate = await ensureEmailCaptchaGate();
+              if (!gate.proceed) {
+                updateLoginState(
+                  reduceAuthFlow(currentState, {
+                    type: 'discovery-loaded',
+                    email,
+                    methods,
+                  }),
+                );
+                return true;
+              }
+              await requestEmailCodeWithCaptchaFallback(did, email, gate.captchaToken);
               updateLoginState(
                 reduceAuthFlow(currentState, {
                   type: 'code-requested',
@@ -1174,10 +1261,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           }
           if (action.type === 'request-code') {
             const identifier = action.identifier.trim();
-            await authClientFor(did, BUILD_AUTH_REGION).requestCode(
-              action.kind,
-              identifier,
-            );
+            if (action.kind === 'email') {
+              const gate = await ensureEmailCaptchaGate();
+              // 取消:不发码、不改状态、不报错(用户可再点发送/重发)。
+              if (!gate.proceed) return false;
+              await requestEmailCodeWithCaptchaFallback(did, identifier, gate.captchaToken);
+            } else {
+              await authClientFor(did, BUILD_AUTH_REGION).requestCode(
+                action.kind,
+                identifier,
+              );
+            }
             updateLoginState(
               reduceAuthFlow(loginStateRef.current, {
                 type: 'code-requested',
@@ -1357,6 +1451,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [
       acceptOutcome,
       completeOAuthCallback,
+      ensureEmailCaptchaGate,
+      requestEmailCodeWithCaptchaFallback,
       suspendSessionRecoveryForLogin,
       updateLoginState,
     ],
@@ -1648,6 +1744,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       clearAuthError,
       consumeAccountDeletionRestored,
       dispatchLoginAction,
+      captchaChallenge,
+      resolveCaptchaChallenge,
       completeOAuthCallback,
       logout,
       terminateSession,
@@ -1665,6 +1763,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       accountDeletionReceipt,
       accountDeletionRestored,
       authError,
+      captchaChallenge,
       clearAccountDeletionReceipt,
       clearAuthError,
       completeOAuthCallback,
@@ -1681,6 +1780,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       loginState,
       logout,
       requestAccountDeletionChallenge,
+      resolveCaptchaChallenge,
       terminateSession,
       user,
     ],

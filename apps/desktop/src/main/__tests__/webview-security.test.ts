@@ -32,7 +32,7 @@ vi.mock('../rsb-browser-bridge/native-popup-surfaces', () => ({
   attributeRsbNativePopupSurface: nativeSurfaceMocks.attribute,
 }));
 
-import { BROWSER_PARTITION } from '../../shared/webviewPartition';
+import { BROWSER_PARTITION, LOGIN_CAPTCHA_PARTITION } from '../../shared/webviewPartition';
 import { getEffectiveAppShortcuts, type AppShortcutId } from '../../shared/appShortcuts';
 import {
   BLANK_POPUP_WINDOW_WEB_PREFERENCES,
@@ -43,11 +43,14 @@ import {
   setRsbPopupOpenerReportSubscriber,
   RSB_BROWSER_POPUP_CHANNEL,
   applyGhostWebviewHardening,
+  applyLoginCaptchaWebviewHardening,
   applyWebviewHardening,
   installBrowserGuestHandlers,
   installDeferredPopupRouter,
+  isAllowedLoginCaptchaUrl,
   isGuestShortcutKeyDownType,
   resolveGuestShortcutAction,
+  setLoginCaptchaOriginResolver,
   setRsbPopupOpenerResolver,
 } from '../webview-security';
 
@@ -305,6 +308,89 @@ describe('applyGhostWebviewHardening(意识面板 webview)', () => {
     expect('allowpopups' in params).toBe(false);
     expect('disablewebsecurity' in params).toBe(false);
     expect('webpreferences' in params).toBe(false);
+  });
+});
+
+describe('applyLoginCaptchaWebviewHardening(登录 captcha webview)', () => {
+  it('与意识面板同级锁死:保留内存分区、零 preload、零 popup', () => {
+    const webPreferences: Record<string, unknown> = {
+      nodeIntegration: true,
+      nodeIntegrationInSubFrames: true,
+      nodeIntegrationInWorker: true,
+      contextIsolation: false,
+      sandbox: false,
+      webviewTag: true,
+      webSecurity: false,
+      allowRunningInsecureContent: true,
+      plugins: true,
+      preload: '/tmp/evil-preload.js',
+    };
+    const params: Record<string, string> = {
+      src: 'https://auth.example.com/captcha/turnstile?theme=dark',
+      partition: LOGIN_CAPTCHA_PARTITION,
+      disablewebsecurity: 'true',
+      webpreferences: 'nodeIntegration=1',
+      allowpopups: 'true',
+    };
+
+    applyLoginCaptchaWebviewHardening(webPreferences, params);
+
+    expect(webPreferences.sandbox).toBe(true);
+    expect(webPreferences.nodeIntegration).toBe(false);
+    expect(webPreferences.nodeIntegrationInSubFrames).toBe(false);
+    expect(webPreferences.nodeIntegrationInWorker).toBe(false);
+    expect(webPreferences.contextIsolation).toBe(true);
+    expect(webPreferences.webSecurity).toBe(true);
+    expect(webPreferences.allowRunningInsecureContent).toBe(false);
+    expect(webPreferences.webviewTag).toBe(false);
+    expect(webPreferences.plugins).toBe(false);
+    expect('preload' in webPreferences).toBe(false);
+    expect(params.partition).toBe(LOGIN_CAPTCHA_PARTITION);
+    expect('allowpopups' in params).toBe(false);
+    expect('disablewebsecurity' in params).toBe(false);
+    expect('webpreferences' in params).toBe(false);
+  });
+});
+
+describe('isAllowedLoginCaptchaUrl(captcha 附加/导航白名单)', () => {
+  afterEach(() => setLoginCaptchaOriginResolver(null));
+
+  it('resolver 未注入时 fail-closed', () => {
+    expect(isAllowedLoginCaptchaUrl('https://auth.example.com/captcha/turnstile')).toBe(false);
+  });
+
+  it('https + origin 命中 + 托管页精确路径才放行', () => {
+    setLoginCaptchaOriginResolver(() => ['https://auth.example.com']);
+    expect(isAllowedLoginCaptchaUrl('https://auth.example.com/captcha/turnstile')).toBe(true);
+    expect(
+      isAllowedLoginCaptchaUrl('https://auth.example.com/captcha/turnstile?theme=dark&lang=ja'),
+    ).toBe(true);
+    // 路径不精确、origin 不命中、协议降级一律拒
+    expect(isAllowedLoginCaptchaUrl('https://auth.example.com/captcha/other')).toBe(false);
+    expect(isAllowedLoginCaptchaUrl('https://auth.example.com/')).toBe(false);
+    expect(isAllowedLoginCaptchaUrl('https://evil.example.com/captcha/turnstile')).toBe(false);
+    expect(isAllowedLoginCaptchaUrl('http://auth.example.com/captcha/turnstile')).toBe(false);
+    expect(isAllowedLoginCaptchaUrl('not-a-url')).toBe(false);
+    expect(isAllowedLoginCaptchaUrl(undefined)).toBe(false);
+  });
+
+  it('loopback 上放行 http(本地 dev auth-server),非 loopback http 拒绝', () => {
+    setLoginCaptchaOriginResolver(() => [
+      'http://localhost:3344',
+      'http://127.0.0.1:3344',
+      'http://auth.internal:3344',
+    ]);
+    expect(isAllowedLoginCaptchaUrl('http://localhost:3344/captcha/turnstile')).toBe(true);
+    expect(isAllowedLoginCaptchaUrl('http://127.0.0.1:3344/captcha/turnstile')).toBe(true);
+    // 即便 resolver 误列了非 loopback 的 http origin,协议闸仍拒
+    expect(isAllowedLoginCaptchaUrl('http://auth.internal:3344/captcha/turnstile')).toBe(false);
+  });
+
+  it('resolver 抛错时 fail-closed', () => {
+    setLoginCaptchaOriginResolver(() => {
+      throw new Error('endpoints not ready');
+    });
+    expect(isAllowedLoginCaptchaUrl('https://auth.example.com/captcha/turnstile')).toBe(false);
   });
 });
 

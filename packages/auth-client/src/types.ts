@@ -24,12 +24,34 @@ export const membershipSchema = z.object({
 });
 export type AuthMembership = z.infer<typeof membershipSchema>;
 
+/**
+ * 人机验证（CAPTCHA）配置：auth-server 开启时经 GET /api/auth/providers 下发。
+ * requiredFor 声明哪些动作发起前必须先完成挑战（当前仅邮箱发码）。
+ * 关闭时服务端整字段省略 → undefined = 不需要人机验证。
+ */
+export const captchaConfigSchema = z.object({
+  provider: z.literal("turnstile"),
+  siteKey: z.string().min(1),
+  requiredFor: z.array(z.enum(["email_request_code"])),
+});
+export type CaptchaConfig = z.infer<typeof captchaConfigSchema>;
+
+/**
+ * auth-server 托管 Turnstile 挑战页的固定路径(wire 契约)。
+ * 完整地址 = authApiBaseUrl + 本路径 + `?theme=<light|dark>&lang=<BCP-47>`;
+ * 页面把结果写进 location.hash(`cindy-captcha=ok.<token>` / `err.<code>`)
+ * 或经 ReactNativeWebView.postMessage 回传(双宿主同页兼容)。
+ */
+export const CAPTCHA_CHALLENGE_PAGE_PATH = "/captcha/turnstile";
+
 export const providerConfigSchema = z.object({
   region: authRegionSchema,
   attribution: z.enum(["phone", "email"]),
   email: z.boolean(),
   phone: z.boolean(),
   social: z.array(socialProviderSchema),
+  // optional 兼容尚未升级的旧 auth-server 响应(缺字段不整份拒绝)。
+  captcha: captchaConfigSchema.optional(),
 });
 export type ProviderConfig = z.infer<typeof providerConfigSchema>;
 

@@ -66,6 +66,59 @@ describe("CindyAuthClient", () => {
     });
   });
 
+  it("parses the optional captcha config from providers", async () => {
+    const fetch = vi.fn(async () =>
+      response(200, {
+        region: "cn",
+        attribution: "phone",
+        email: true,
+        phone: true,
+        social: [],
+        captcha: {
+          provider: "turnstile",
+          siteKey: "scenario-captcha-sitekey",
+          requiredFor: ["email_request_code"],
+        },
+      }),
+    );
+    await expect(client(fetch).getProviders()).resolves.toMatchObject({
+      captcha: { provider: "turnstile", requiredFor: ["email_request_code"] },
+    });
+    // 旧 server 缺字段 → undefined(可选字段,不整份拒绝)
+    const legacyFetch = vi.fn(async () =>
+      response(200, {
+        region: "cn",
+        attribution: "phone",
+        email: true,
+        phone: true,
+        social: [],
+      }),
+    );
+    const legacy = await client(legacyFetch).getProviders();
+    expect(legacy.captcha).toBeUndefined();
+  });
+
+  it("carries captchaToken in the email request-code body only when provided", async () => {
+    const fetch = vi.fn(async () => response(200, { status: "sent" }));
+    await client(fetch).requestCode("email", "user@example.com");
+    const bare = JSON.parse((fetch.mock.calls[0]?.[1] as { body: string }).body) as Record<
+      string,
+      unknown
+    >;
+    expect(bare).toEqual({ email: "user@example.com", locale: "zh-CN" });
+    await client(fetch).requestCode("email", "user@example.com", {
+      captchaToken: "captcha-token-1",
+    });
+    const withToken = JSON.parse(
+      (fetch.mock.calls[1]?.[1] as { body: string }).body,
+    ) as Record<string, unknown>;
+    expect(withToken).toEqual({
+      email: "user@example.com",
+      locale: "zh-CN",
+      captchaToken: "captcha-token-1",
+    });
+  });
+
   it("parses all auth-server outcome states", async () => {
     const outcomes = [
       { status: "binding_required", bindType: "phone", bindTicket: "bind-1" },
