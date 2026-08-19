@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { parseCaptchaWebViewMessage } from '@/auth/loginCaptchaMessage';
+import { withLoginCaptchaTheme } from '@/auth/loginCaptchaUrl';
 
 /**
  * 登录人机验证(captcha)移动端测试:
@@ -42,6 +43,24 @@ describe('parseCaptchaWebViewMessage(挑战页 postMessage 回传契约)', () =>
     expect(
       parseCaptchaWebViewMessage(JSON.stringify({ type: 'cindy-captcha', ok: false })),
     ).toEqual({ ok: false, code: 'unknown' });
+  });
+});
+
+describe('withLoginCaptchaTheme(挑战页有效登录主题)', () => {
+  it('保留既有参数并写入 light/dark，覆盖陈旧 theme', () => {
+    expect(
+      withLoginCaptchaTheme('https://auth.example.com/captcha/turnstile?lang=ja', 'light'),
+    ).toBe('https://auth.example.com/captcha/turnstile?lang=ja&theme=light');
+    expect(
+      withLoginCaptchaTheme(
+        'https://auth.example.com/captcha/turnstile?theme=light&lang=ko',
+        'dark',
+      ),
+    ).toBe('https://auth.example.com/captcha/turnstile?theme=dark&lang=ko');
+  });
+
+  it('非法 URL 保留原值，由 WebView 加载失败路径收敛', () => {
+    expect(withLoginCaptchaTheme('not-a-url', 'light')).toBe('not-a-url');
   });
 });
 
@@ -95,5 +114,11 @@ describe('AuthContext captcha 闸接线(静态源码断言)', () => {
       'target.origin === pageOrigin || target.origin === TURNSTILE_ORIGIN',
     );
     expect(captchaWebViewSource).not.toContain('`${pageOrigin}/*`');
+  });
+
+  it('captcha WebView 使用 ThemeOverrideProvider 内的有效登录主题', () => {
+    expect(captchaWebViewSource).toContain('const { colors, mode } = useTheme()');
+    expect(captchaWebViewSource).toContain('withLoginCaptchaTheme(url, mode)');
+    expect(captchaWebViewSource).toContain('source={{ uri: themedUrl }}');
   });
 });

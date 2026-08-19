@@ -421,7 +421,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     resolve?.(token);
   }, []);
 
-  /** 出题并等结果。theme 不传,托管页按 prefers-color-scheme 自适配。 */
+  /** 出题并等结果。有效登录主题由 ThemeOverrideProvider 内的 WebView 补入 URL。 */
   const runCaptchaChallenge = useCallback((): Promise<string | null> => {
     let base = getMobileEndpointForRealm(BUILD_AUTH_REGION, 'authApiBaseUrl');
     while (base.endsWith('/')) base = base.slice(0, -1);

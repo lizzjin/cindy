@@ -3,6 +3,7 @@ import { ActivityIndicator, BackHandler, Pressable, StyleSheet, View } from 'rea
 import { WebView } from 'react-native-webview';
 
 import { parseCaptchaWebViewMessage } from '@/auth/loginCaptchaMessage';
+import { withLoginCaptchaTheme } from '@/auth/loginCaptchaUrl';
 import { loginText } from '@/auth/loginMessages';
 import { Text } from '@/components/AppText';
 import { useTheme } from '@/theme';
@@ -27,7 +28,7 @@ export function LoginCaptchaWebView({
   url: string;
   onResult: (token: string | null) => void;
 }) {
-  const { colors } = useTheme();
+  const { colors, mode } = useTheme();
   const login = colors.login;
   const [failed, setFailed] = useState(false);
   const [ready, setReady] = useState(false);
@@ -42,13 +43,17 @@ export function LoginCaptchaWebView({
     return () => sub.remove();
   }, [onResult]);
 
+  // 此组件位于 MobileLoginHandoffStage 的 ThemeOverrideProvider 内，mode 是登录
+  // 子树真正显示的主题（首次启动固定 light，之后才跟随系统）。
+  const themedUrl = useMemo(() => withLoginCaptchaTheme(url, mode), [mode, url]);
+
   const pageOrigin = useMemo(() => {
     try {
-      return new URL(url).origin;
+      return new URL(themedUrl).origin;
     } catch {
       return null;
     }
-  }, [url]);
+  }, [themedUrl]);
 
   const retry = () => {
     setReady(false);
@@ -116,7 +121,7 @@ export function LoginCaptchaWebView({
             <WebView
               key={generation}
               incognito
-              source={{ uri: url }}
+              source={{ uri: themedUrl }}
               // react-native-webview 会把 originWhitelist 未命中的 URL 主动交给
               // Linking.openURL。因此这里只负责让导航进入下方回调;真正的同源
               // 白名单由回调精确判定,其余(含任意跳转/唤起外部)一律拒绝。
