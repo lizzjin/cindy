@@ -5,6 +5,7 @@ import { useSyncExternalStore } from 'react';
 import { ArrowLeft, ChevronRight, Puzzle } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
+import { Tip } from '@/components/ui/tooltip';
 import { TAB_IDS, isSettingsTab } from '@/lib/tabLabels';
 import type { SettingsTab } from '@/lib/tabLabels';
 import { SettingsSidebarNav } from './SettingsSidebarNav';
@@ -216,14 +217,16 @@ export function SettingsView() {
         >
           {/* Back navigation — gap 10, pb 18, aligned with menu items via px-3 */}
           <div className="flex items-center gap-2.5 px-3 pb-[18px]">
-            <button
-              type="button"
-              onClick={() => navigate('/')}
-              aria-label={t('settings.back')}
-              className="flex items-center justify-center text-[var(--settings-back-icon)] transition-colors hover:text-[var(--settings-back-text)]"
-            >
-              <ArrowLeft size={20} />
-            </button>
+            <Tip text={t('settings.back')} side="bottom">
+              <button
+                type="button"
+                onClick={() => navigate('/')}
+                aria-label={t('settings.back')}
+                className="flex items-center justify-center text-[var(--settings-back-icon)] transition-colors hover:text-[var(--settings-back-text)]"
+              >
+                <ArrowLeft size={20} />
+              </button>
+            </Tip>
             <h1 className="text-24 font-medium leading-[1.1] text-[var(--settings-back-text)]">
               {t('settings.title')}
             </h1>
