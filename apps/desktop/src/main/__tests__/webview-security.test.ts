@@ -45,7 +45,7 @@ import {
   applyGhostWebviewHardening,
   applyLoginCaptchaWebviewHardening,
   applyWebviewHardening,
-  denyLoginCaptchaSessionPermissions,
+  hardenLoginCaptchaSession,
   installBrowserGuestHandlers,
   installDeferredPopupRouter,
   installLoginCaptchaGuestHandlers,
@@ -353,17 +353,23 @@ describe('applyLoginCaptchaWebviewHardening(登录 captcha webview)', () => {
     expect('webpreferences' in params).toBe(false);
   });
 
-  it('对专属 session 的权限请求与权限检查都默认拒绝', () => {
+  it('对专属 session 的权限与下载都默认拒绝', () => {
     const setPermissionRequestHandler = vi.fn();
     const setPermissionCheckHandler = vi.fn();
+    const on = vi.fn();
 
-    denyLoginCaptchaSessionPermissions({
+    hardenLoginCaptchaSession({
       setPermissionRequestHandler,
       setPermissionCheckHandler,
-    } as unknown as Pick<Session, 'setPermissionRequestHandler' | 'setPermissionCheckHandler'>);
+      on,
+    } as unknown as Pick<
+      Session,
+      'setPermissionRequestHandler' | 'setPermissionCheckHandler' | 'on'
+    >);
 
     expect(setPermissionRequestHandler).toHaveBeenCalledTimes(1);
     expect(setPermissionCheckHandler).toHaveBeenCalledTimes(1);
+    expect(on).toHaveBeenCalledWith('will-download', expect.any(Function));
 
     const callback = vi.fn();
     const requestHandler = setPermissionRequestHandler.mock.calls[0]![0] as (
@@ -376,6 +382,13 @@ describe('applyLoginCaptchaWebviewHardening(登录 captcha webview)', () => {
 
     const checkHandler = setPermissionCheckHandler.mock.calls[0]![0] as () => boolean;
     expect(checkHandler()).toBe(false);
+
+    const preventDefault = vi.fn();
+    const downloadHandler = on.mock.calls[0]![1] as (event: {
+      preventDefault(): void;
+    }) => void;
+    downloadHandler({ preventDefault });
+    expect(preventDefault).toHaveBeenCalledTimes(1);
   });
 });
 

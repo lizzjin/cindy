@@ -193,17 +193,28 @@ export function applyLoginCaptchaWebviewHardening(
 }
 
 /**
- * CAPTCHA guest 使用独立 session，但 session 默认权限策略不能依赖 Electron
+ * CAPTCHA guest 使用独立 session，但 session 默认安全策略不能依赖 Electron
  * 版本的隐式行为。挑战只需要网络、脚本与 iframe，不需要任何设备/系统权限，
- * 因此 request/check 两条权限通道都显式 fail-closed。
+ * 也不应向本机写入下载，因此权限与下载通道都显式 fail-closed。
  */
-export function denyLoginCaptchaSessionPermissions(
-  captchaSession: Pick<Session, 'setPermissionRequestHandler' | 'setPermissionCheckHandler'>,
+const hardenedLoginCaptchaSessions = new WeakSet<object>();
+
+export function hardenLoginCaptchaSession(
+  captchaSession: Pick<
+    Session,
+    'setPermissionRequestHandler' | 'setPermissionCheckHandler' | 'on'
+  >,
 ): void {
+  // partition session 会跨多次挑战复用；不要为每次 webview attach 累加监听器。
+  if (hardenedLoginCaptchaSessions.has(captchaSession)) return;
   captchaSession.setPermissionRequestHandler((_webContents, _permission, callback) => {
     callback(false);
   });
   captchaSession.setPermissionCheckHandler(() => false);
+  captchaSession.on('will-download', (event) => {
+    event.preventDefault();
+  });
+  hardenedLoginCaptchaSessions.add(captchaSession);
 }
 
 /**
@@ -788,7 +799,7 @@ export function installWebviewHardener(): void {
         try {
           // 在 guest 获准附加前先锁死专属 session 的权限请求与权限检查；
           // 任一初始化异常都拒绝附加，不能让远程内容落到默认权限策略。
-          denyLoginCaptchaSessionPermissions(session.fromPartition(LOGIN_CAPTCHA_PARTITION));
+          hardenLoginCaptchaSession(session.fromPartition(LOGIN_CAPTCHA_PARTITION));
         } catch {
           e.preventDefault();
           return;
