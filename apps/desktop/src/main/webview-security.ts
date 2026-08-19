@@ -24,7 +24,7 @@
 
 import path from 'node:path';
 
-import { app, type BrowserWindow, type WebContents } from 'electron';
+import { app, session, type BrowserWindow, type Session, type WebContents } from 'electron';
 
 import {
   BROWSER_PARTITION,
@@ -190,6 +190,20 @@ export function applyLoginCaptchaWebviewHardening(
   webPreferences.webviewTag = false;
   webPreferences.plugins = false;
   delete webPreferences.preload;
+}
+
+/**
+ * CAPTCHA guest 使用独立 session，但 session 默认权限策略不能依赖 Electron
+ * 版本的隐式行为。挑战只需要网络、脚本与 iframe，不需要任何设备/系统权限，
+ * 因此 request/check 两条权限通道都显式 fail-closed。
+ */
+export function denyLoginCaptchaSessionPermissions(
+  captchaSession: Pick<Session, 'setPermissionRequestHandler' | 'setPermissionCheckHandler'>,
+): void {
+  captchaSession.setPermissionRequestHandler((_webContents, _permission, callback) => {
+    callback(false);
+  });
+  captchaSession.setPermissionCheckHandler(() => false);
 }
 
 /**
@@ -757,6 +771,14 @@ export function installWebviewHardener(): void {
       // src 必须命中 auth origin 白名单 + 托管页固定路径(fail-closed)。
       if (params.partition === LOGIN_CAPTCHA_PARTITION) {
         if (!isAllowedLoginCaptchaUrl(params.src)) {
+          e.preventDefault();
+          return;
+        }
+        try {
+          // 在 guest 获准附加前先锁死专属 session 的权限请求与权限检查；
+          // 任一初始化异常都拒绝附加，不能让远程内容落到默认权限策略。
+          denyLoginCaptchaSessionPermissions(session.fromPartition(LOGIN_CAPTCHA_PARTITION));
+        } catch {
           e.preventDefault();
           return;
         }

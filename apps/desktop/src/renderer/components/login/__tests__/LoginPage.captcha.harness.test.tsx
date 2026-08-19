@@ -93,12 +93,16 @@ function setState(rerender: (ui: React.ReactElement) => void, state: AuthFlowSta
 }
 
 /** 模拟挑战页把结果写进 location.hash(桌面回传通道)。 */
-function emitCaptchaResult(fragment: string) {
-  const webview = document.querySelector('webview');
-  expect(webview, 'captcha webview 应已挂载').not.toBeNull();
+async function emitCaptchaResult(fragment: string) {
+  // overlay 先提交、webview 再由 effect append；Windows CI 上两步可能跨 tick。
+  const webview = await waitFor(() => {
+    const candidate = document.querySelector('webview');
+    expect(candidate, 'captcha webview 应已挂载').not.toBeNull();
+    return candidate!;
+  });
   const event = new Event('did-navigate-in-page');
   Object.defineProperty(event, 'url', { value: `${CHALLENGE_BASE}#${fragment}` });
-  webview!.dispatchEvent(event);
+  webview.dispatchEvent(event);
 }
 
 beforeEach(() => {
@@ -128,7 +132,7 @@ describe('LoginPage captcha 前置闸(providers 主动触发)', () => {
     // overlay 打开时不应已派发
     expect(loginHook.value.dispatchWithResult).not.toHaveBeenCalled();
 
-    emitCaptchaResult('cindy-captcha=ok.scenario-captcha-token');
+    await emitCaptchaResult('cindy-captcha=ok.scenario-captcha-token');
     await waitFor(() =>
       expect(loginHook.value.dispatchWithResult).toHaveBeenCalledWith({
         type: 'request-code',
@@ -183,8 +187,24 @@ describe('LoginPage captcha 前置闸(providers 主动触发)', () => {
 
     const pending = gate!();
     await screen.findByTestId('login-captcha-overlay');
-    emitCaptchaResult('cindy-captcha=ok.gate-token');
+    await emitCaptchaResult('cindy-captcha=ok.gate-token');
     await expect(pending).resolves.toBe('gate-token');
+  });
+
+  it('快速重复触发只保留一个挑战,后续调用取消且不会覆盖首个 resolver', async () => {
+    const { identifier } = await statesFor('providers:email-captcha');
+    mount(identifier);
+    const gate = getLoginEmailCaptchaGate();
+    expect(gate).not.toBeNull();
+
+    const first = gate!();
+    const duplicate = gate!();
+    await expect(duplicate).resolves.toBeNull();
+    await screen.findByTestId('login-captcha-overlay');
+    expect(document.querySelectorAll('webview')).toHaveLength(1);
+
+    await emitCaptchaResult('cindy-captcha=ok.single-flight-token');
+    await expect(first).resolves.toBe('single-flight-token');
   });
 
   it('AuthContext 自动发码链的闸:providers 无 captcha 时直接放行(undefined)', async () => {
@@ -219,7 +239,7 @@ describe('LoginPage captcha 前置闸(providers 主动触发)', () => {
       email: 'user@example.com',
     });
 
-    emitCaptchaResult('cindy-captcha=ok.discover-fallback-token');
+    await emitCaptchaResult('cindy-captcha=ok.discover-fallback-token');
     await waitFor(() => expect(loginHook.value.dispatchWithResult).toHaveBeenCalledTimes(2));
     expect(loginHook.value.dispatchWithResult).toHaveBeenNthCalledWith(2, {
       type: 'request-code',
@@ -240,7 +260,7 @@ describe('LoginPage captcha 前置闸(providers 主动触发)', () => {
 
     fireEvent.click(screen.getByText('login.resendCode'));
     await screen.findByTestId('login-captcha-overlay');
-    emitCaptchaResult('cindy-captcha=ok.fallback-token');
+    await emitCaptchaResult('cindy-captcha=ok.fallback-token');
 
     await waitFor(() => expect(loginHook.value.dispatchWithResult).toHaveBeenCalledTimes(2));
     expect(loginHook.value.dispatchWithResult).toHaveBeenNthCalledWith(2, {

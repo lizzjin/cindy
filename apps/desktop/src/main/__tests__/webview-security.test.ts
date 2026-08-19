@@ -19,7 +19,7 @@
 
 import { EventEmitter } from 'node:events';
 
-import type { BrowserWindow, WebContents } from 'electron';
+import type { BrowserWindow, Session, WebContents } from 'electron';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const nativeSurfaceMocks = vi.hoisted(() => ({
@@ -45,6 +45,7 @@ import {
   applyGhostWebviewHardening,
   applyLoginCaptchaWebviewHardening,
   applyWebviewHardening,
+  denyLoginCaptchaSessionPermissions,
   installBrowserGuestHandlers,
   installDeferredPopupRouter,
   isAllowedLoginCaptchaUrl,
@@ -349,6 +350,31 @@ describe('applyLoginCaptchaWebviewHardening(登录 captcha webview)', () => {
     expect('allowpopups' in params).toBe(false);
     expect('disablewebsecurity' in params).toBe(false);
     expect('webpreferences' in params).toBe(false);
+  });
+
+  it('对专属 session 的权限请求与权限检查都默认拒绝', () => {
+    const setPermissionRequestHandler = vi.fn();
+    const setPermissionCheckHandler = vi.fn();
+
+    denyLoginCaptchaSessionPermissions({
+      setPermissionRequestHandler,
+      setPermissionCheckHandler,
+    } as unknown as Pick<Session, 'setPermissionRequestHandler' | 'setPermissionCheckHandler'>);
+
+    expect(setPermissionRequestHandler).toHaveBeenCalledTimes(1);
+    expect(setPermissionCheckHandler).toHaveBeenCalledTimes(1);
+
+    const callback = vi.fn();
+    const requestHandler = setPermissionRequestHandler.mock.calls[0]![0] as (
+      webContents: unknown,
+      permission: string,
+      callback: (allowed: boolean) => void,
+    ) => void;
+    requestHandler(undefined, 'media', callback);
+    expect(callback).toHaveBeenCalledWith(false);
+
+    const checkHandler = setPermissionCheckHandler.mock.calls[0]![0] as () => boolean;
+    expect(checkHandler()).toBe(false);
   });
 });
 

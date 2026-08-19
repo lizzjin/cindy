@@ -461,25 +461,34 @@ export function LoginPage() {
     baseUrl: string;
     resolve: (token: string | null) => void;
   } | null>(null);
+  // 挑战创建必须单飞：React 提交 overlay 前的快速重复触发不能覆盖 resolver。
+  // 后续并发调用按取消处理，避免同一枚单次 token 被两个发码请求重复消费。
+  const captchaChallengePendingRef = useRef(false);
   /** 打开挑战 overlay 并等结果:token = 通过;null = 用户取消或挑战页地址不可得。 */
   const obtainCaptchaToken = async (): Promise<string | null> => {
-    let baseUrl: string;
+    if (captchaChallengePendingRef.current) return null;
+    captchaChallengePendingRef.current = true;
     try {
-      baseUrl = await window.electronAPI.authGetCaptchaChallengeUrl();
-    } catch (error) {
-      // IPC 面缺失/异常:视同取消(不发码,用户可重试);错误细节只进日志。
-      log.error('resolve captcha challenge url failed', error);
-      return null;
-    }
-    return new Promise((resolve) => {
-      setCaptchaChallenge({
-        baseUrl,
-        resolve: (token) => {
-          setCaptchaChallenge(null);
-          resolve(token);
-        },
+      let baseUrl: string;
+      try {
+        baseUrl = await window.electronAPI.authGetCaptchaChallengeUrl();
+      } catch (error) {
+        // IPC 面缺失/异常:视同取消(不发码,用户可重试);错误细节只进日志。
+        log.error('resolve captcha challenge url failed', error);
+        return null;
+      }
+      return await new Promise((resolve) => {
+        setCaptchaChallenge({
+          baseUrl,
+          resolve: (token) => {
+            setCaptchaChallenge(null);
+            resolve(token);
+          },
+        });
       });
-    });
+    } finally {
+      captchaChallengePendingRef.current = false;
+    }
   };
   const emailCaptchaRequired = () =>
     captchaConfigRef.current?.requiredFor.includes('email_request_code') === true;
