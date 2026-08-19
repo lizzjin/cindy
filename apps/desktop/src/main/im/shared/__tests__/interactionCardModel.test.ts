@@ -17,12 +17,14 @@ import { ui } from '../../feishu/uiText';
 import { createCardBuilders } from '../cardBuilders';
 import {
   buildAskAnswerDecision,
+  buildAskAnswersDecision,
   buildPermissionAllowAlwaysDecision,
   buildPermissionAllowOnceDecision,
   buildPermissionDenyDecision,
   buildPlanApproveDecision,
   buildPlanDenyDecision,
   composeInteractionModel,
+  needsAskMultiCard,
   BTN_LABEL_MAX,
   MAX_OPTIONS,
   MAX_PLAN_LEN,
@@ -31,7 +33,26 @@ import {
 } from '../interactionCardModel';
 import { cancelPending, registerPending } from '../pendingInteractions';
 
-const cards = createCardBuilders(ui, () => 'high');
+/**
+ * v1 单问卡视图: 飞书 ui 包已带 multi 打勾卡文案, 剥掉它等价于未提供打勾卡
+ * 的渠道(hook 侧 / telegram / wecom / wechat)—— 跨实现一致性断言的是这条
+ * 两侧共享的 v1 语义, 用剥离后的包才能锁住它不随飞书升级漂移。
+ */
+const uiV1 = {
+  ...ui,
+  cards: {
+    ...ui.cards,
+    ask: {
+      title: ui.cards.ask.title,
+      noOptionsHint: ui.cards.ask.noOptionsHint,
+      resolved: ui.cards.ask.resolved,
+    },
+  },
+} as typeof ui;
+
+const cards = createCardBuilders(uiV1, () => 'high');
+/** 飞书原样包(带 multi 打勾卡文案) — 多题/多选分发用。 */
+const feishuCards = createCardBuilders(ui, () => 'high');
 
 /** IM 侧按压 -> 决策: 与 cardActionHandler.decisionFromPress 同一张表。 */
 function imDecisionFromButton(
@@ -160,6 +181,48 @@ describe('composeInteractionModel — v1 规则', () => {
     expect(
       composeInteractionModel({ kind: 'unknown' } as unknown as InteractionRequest),
     ).toBeNull();
+  });
+
+  it('questions 保留全部问题: 每问独立 multiSelect / 选项上限 / 降级, 顶层字段仍是第一问投影', () => {
+    const model = composeInteractionModel(ASK_MULTI)!;
+    if (model.kind !== 'ask_user_question') throw new Error('unreachable');
+    // 顶层 v1 投影不变(第一问)
+    expect(model.question.question).toBe('这次用哪个方案实现?');
+    expect(model.choices).toHaveLength(MAX_OPTIONS);
+    // questions 全量: 两问都在, 各自截到 MAX_OPTIONS
+    expect(model.questions).toHaveLength(2);
+    const [q0, q1] = model.questions;
+    expect(q0.multiSelect).toBe(true);
+    expect(q0.choices).toHaveLength(MAX_OPTIONS);
+    expect(q1.multiSelect).toBe(false);
+    expect(q1.choices).toHaveLength(1);
+    expect(q1.choices[0].decision).toEqual({
+      kind: 'ask_user_question',
+      answers: { '第二问在 v1 不渲染': '不该出现' },
+    });
+  });
+
+  it('needsAskMultiCard: 多题或含多选才走打勾卡', () => {
+    expect(needsAskMultiCard(ASK_MULTI)).toBe(true); // 多题 + 多选
+    expect(needsAskMultiCard(ASK_NO_OPTIONS)).toBe(false); // 单题非多选
+    expect(
+      needsAskMultiCard({
+        kind: 'ask_user_question',
+        requestId: 'r',
+        questions: [{ question: '挑几个', multiSelect: true, options: [{ label: 'A' }] }],
+      }),
+    ).toBe(true); // 单题但多选
+    expect(
+      needsAskMultiCard({ kind: 'ask_user_question', requestId: 'r', questions: [] }),
+    ).toBe(false);
+  });
+
+  it('buildAskAnswersDecision: 未答的题不写 key, 多选答案由调用方拼接', () => {
+    expect(buildAskAnswersDecision({ '用哪个?': 'A, B' })).toEqual({
+      kind: 'ask_user_question',
+      answers: { '用哪个?': 'A, B' },
+    });
+    expect(buildAskAnswersDecision({})).toEqual({ kind: 'ask_user_question', answers: {} });
   });
 
   it('permission 的会话级 addRules destination 与 maker-core 常量同值(防漂移)', () => {
@@ -338,5 +401,79 @@ describe('跨实现一致性 — IM cardBuilders vs hook composeInteractionCard'
     expect(resolved.body!.endsWith('✅ 已允许（仅本次）')).toBe(true);
     // 按钮清空 — 已决策的卡不能再点
     expect(resolved.buttons).toEqual([]);
+  });
+});
+
+describe('多题/多选打勾卡(仅提供 ui.cards.ask.multi 的渠道, 目前飞书)', () => {
+  it('命中 needsAskMultiCard 时 buildAskUserCard 分发打勾卡: 全问题渲染 + 题号按钮 + 提交', () => {
+    const spec = feishuCards.buildAskUserCard(ASK_MULTI)!;
+    // 标题用 multi 总标题(多道题), 不再借用第一问 header
+    expect(spec.title).toBe(ui.cards.ask.multi!.title);
+    // 正文: 两问都渲染(带序号), 多选问带提示, header 不同的问把问题全文放正文
+    expect(spec.body).toContain('**1. 方案选择**（可多选）');
+    expect(spec.body).toContain('这次用哪个方案实现?');
+    expect(spec.body).toContain('**2. 第二问在 v1 不渲染**');
+    // 按钮: 每问至多 MAX_OPTIONS 个选项 + 1 枚提交; 选项按钮带题号锚定
+    const optionButtons = spec.buttons.filter((b) => b.id === 'ask:multi');
+    expect(optionButtons).toHaveLength(MAX_OPTIONS + 1);
+    expect(optionButtons[0].label).toBe('1·方案 0');
+    expect(optionButtons[0].payload).toMatchObject({ requestId: 'req-ask-multi', q: 0, o: 0 });
+    expect(optionButtons[MAX_OPTIONS].label).toBe('2·不该出现');
+    const submit = spec.buttons.find((b) => b.id === 'ask:multi-submit');
+    expect(submit?.label).toBe(ui.cards.ask.multi!.submitLabel);
+    expect(submit?.type).toBe('primary');
+    expect(submit?.payload).toMatchObject({ requestId: 'req-ask-multi' });
+  });
+
+  it('未提供 multi 文案的渠道同请求保持 v1 单问卡(回归锁)', () => {
+    const spec = cards.buildAskUserCard(ASK_MULTI)!;
+    expect(spec.buttons.every((b) => b.id === 'ask:pick')).toBe(true);
+    expect(spec.buttons).toHaveLength(MAX_OPTIONS);
+    expect(JSON.stringify(spec)).not.toContain('不该出现');
+    expect(spec.buttons).not.toContainEqual(expect.objectContaining({ id: 'ask:multi-submit' }));
+  });
+
+  it('单题多选沿用单问卡标题观感; 勾选态打勾前缀, 前缀占按钮文案预算', () => {
+    const single: AskRequest = {
+      kind: 'ask_user_question',
+      requestId: 'req-single-multi',
+      questions: [
+        {
+          question: '挑几个框架?',
+          header: '框架',
+          multiSelect: true,
+          options: [{ label: LONG_LABEL }, { label: 'Vue' }],
+        },
+      ],
+    };
+    expect(feishuCards.buildAskUserCard(single)!.title).toBe(ui.cards.ask.title('框架'));
+
+    const selections = new Map<number, Set<number>>([[0, new Set([0])]]);
+    const spec = feishuCards.buildAskMultiCard({
+      requestId: 'req-single-multi',
+      questions: single.questions,
+      selections,
+    });
+    const [on, off] = spec.buttons.filter((b) => b.id === 'ask:multi');
+    expect(on.label.startsWith(`${ui.cards.ask.multi!.selectedMark}1·`)).toBe(true);
+    // 勾选前缀也占预算: 总长不超 BTN_LABEL_MAX, 且内容仍可辨
+    expect(on.label.length).toBeLessThanOrEqual(BTN_LABEL_MAX);
+    expect(off.label).toBe('1·Vue');
+  });
+
+  it('无选项的问题在打勾卡里只给文字提示, 不出按钮', () => {
+    const spec = feishuCards.buildAskMultiCard({
+      requestId: 'r',
+      questions: [
+        { question: '选一个', options: [{ label: 'A' }] },
+        { question: '备注?', multiSelect: true },
+      ],
+      selections: new Map(),
+    });
+    const optionButtons = spec.buttons.filter((b) => b.id === 'ask:multi');
+    // 只有第一问有选项按钮(1 枚), 自由问答不出按钮、正文给提示
+    expect(optionButtons).toHaveLength(1);
+    expect(optionButtons[0].label).toBe('1·A');
+    expect(spec.body).toContain(ui.cards.ask.noOptionsHint);
   });
 });
