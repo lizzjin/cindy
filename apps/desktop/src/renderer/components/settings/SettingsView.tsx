@@ -222,7 +222,7 @@ export function SettingsView() {
                 type="button"
                 onClick={() => navigate('/')}
                 aria-label={t('settings.back')}
-                className="flex items-center justify-center text-[var(--settings-back-icon)] transition-colors hover:text-[var(--settings-back-text)]"
+                className="flex h-7 w-7 items-center justify-center rounded-full text-[var(--settings-back-icon)] transition-[color,background-color,transform] duration-150 hover:bg-titlebar-button-hover hover:text-[var(--settings-back-text)] active:scale-[0.98]"
               >
                 <ArrowLeft size={20} />
               </button>
