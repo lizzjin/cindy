@@ -117,9 +117,10 @@ export function LoginCaptchaWebView({
               key={generation}
               incognito
               source={{ uri: url }}
-              // 顶层导航与 iframe 只放行托管页同源 + Turnstile 挑战域;
-              // 其余(含任意跳转/唤起外部)一律拒,fail-closed。
-              originWhitelist={pageOrigin ? [`${pageOrigin}/*`, `${TURNSTILE_ORIGIN}/*`] : []}
+              // react-native-webview 会把 originWhitelist 未命中的 URL 主动交给
+              // Linking.openURL。因此这里只负责让导航进入下方回调;真正的同源
+              // 白名单由回调精确判定,其余(含任意跳转/唤起外部)一律拒绝。
+              originWhitelist={['*']}
               onShouldStartLoadWithRequest={(request) => {
                 try {
                   const target = new URL(request.url);

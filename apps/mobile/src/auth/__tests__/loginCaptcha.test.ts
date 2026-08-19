@@ -51,6 +51,10 @@ describe('AuthContext captcha 闸接线(静态源码断言)', () => {
     'utf8',
   );
   const loginSource = readFileSync(resolve(process.cwd(), 'app/(auth)/login.tsx'), 'utf8');
+  const captchaWebViewSource = readFileSync(
+    resolve(process.cwd(), 'src/auth/LoginCaptchaWebView.tsx'),
+    'utf8',
+  );
 
   it('discover 的 sole email_code 自动串发路径先过 ensureEmailCaptchaGate', () => {
     const soleBranch = authContextSource.slice(
@@ -82,5 +86,13 @@ describe('AuthContext captcha 闸接线(静态源码断言)', () => {
     expect(loginSource).toContain('auth.captchaChallenge');
     expect(loginSource).toContain('LoginCaptchaWebView');
     expect(loginSource).toContain('auth.resolveCaptchaChallenge');
+  });
+
+  it('captcha WebView 不让 originWhitelist 把挑战页交给外部浏览器', () => {
+    expect(captchaWebViewSource).toContain("originWhitelist={['*']}");
+    expect(captchaWebViewSource).toContain(
+      'target.origin === pageOrigin || target.origin === TURNSTILE_ORIGIN',
+    );
+    expect(captchaWebViewSource).not.toContain('`${pageOrigin}/*`');
   });
 });
