@@ -249,6 +249,17 @@ export function isAllowedLoginCaptchaUrl(rawUrl: string | undefined): boolean {
   return origins.includes(parsed.origin);
 }
 
+/** CAPTCHA guest 的 popup 与顶层导航闸；重定向和普通导航必须走同一白名单。 */
+export function installLoginCaptchaGuestHandlers(guestContents: WebContents): void {
+  guestContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  const guardTopLevelNavigation = (event: Electron.Event, url: string) => {
+    if (isAllowedLoginCaptchaUrl(url)) return;
+    event.preventDefault();
+  };
+  guestContents.on('will-navigate', guardTopLevelNavigation);
+  guestContents.on('will-redirect', guardTopLevelNavigation);
+}
+
 /** Renderer 接收 popup 路由消息的 IPC channel。main → renderer。 */
 export const RSB_BROWSER_POPUP_CHANNEL = 'rsb:browser-popup';
 /** Renderer 接收"webview 内按了 Cmd/Ctrl+L"的 IPC channel。main → renderer。
@@ -803,11 +814,7 @@ export function installWebviewHardener(): void {
         // 挑战页零弹窗;顶层导航只允许停留在托管挑战页白名单内(Turnstile 的
         // 挑战 UI 活在子 iframe 里,顶层不应发生任何跨源导航)。token 回传走
         // location.hash → did-navigate-in-page,不经过 will-navigate。
-        guestContents.setWindowOpenHandler(() => ({ action: 'deny' }));
-        guestContents.on('will-navigate', (event, url) => {
-          if (isAllowedLoginCaptchaUrl(url)) return;
-          event.preventDefault();
-        });
+        installLoginCaptchaGuestHandlers(guestContents);
         return;
       }
       if (pendingGhostAttach) {

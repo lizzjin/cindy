@@ -121,6 +121,9 @@ export function LoginCaptchaWebView({
               // Linking.openURL。因此这里只负责让导航进入下方回调;真正的同源
               // 白名单由回调精确判定,其余(含任意跳转/唤起外部)一律拒绝。
               originWhitelist={['*']}
+              // Android 的 window.open/target=_blank 默认走 onCreateWindow，可能
+              // 绕过导航回调并唤起外部浏览器；禁用多窗口后统一落回本 WebView 闸。
+              setSupportMultipleWindows={false}
               onShouldStartLoadWithRequest={(request) => {
                 try {
                   const target = new URL(request.url);

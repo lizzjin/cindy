@@ -90,6 +90,7 @@ describe('AuthContext captcha 闸接线(静态源码断言)', () => {
 
   it('captcha WebView 不让 originWhitelist 把挑战页交给外部浏览器', () => {
     expect(captchaWebViewSource).toContain("originWhitelist={['*']}");
+    expect(captchaWebViewSource).toContain('setSupportMultipleWindows={false}');
     expect(captchaWebViewSource).toContain(
       'target.origin === pageOrigin || target.origin === TURNSTILE_ORIGIN',
     );

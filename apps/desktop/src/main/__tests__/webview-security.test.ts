@@ -48,6 +48,7 @@ import {
   denyLoginCaptchaSessionPermissions,
   installBrowserGuestHandlers,
   installDeferredPopupRouter,
+  installLoginCaptchaGuestHandlers,
   isAllowedLoginCaptchaUrl,
   isGuestShortcutKeyDownType,
   resolveGuestShortcutAction,
@@ -417,6 +418,37 @@ describe('isAllowedLoginCaptchaUrl(captcha 附加/导航白名单)', () => {
       throw new Error('endpoints not ready');
     });
     expect(isAllowedLoginCaptchaUrl('https://auth.example.com/captcha/turnstile')).toBe(false);
+  });
+});
+
+describe('installLoginCaptchaGuestHandlers(captcha guest 导航闸)', () => {
+  afterEach(() => setLoginCaptchaOriginResolver(null));
+
+  it('拒绝 popup，并同时拦截越界普通导航与 HTTP redirect', () => {
+    setLoginCaptchaOriginResolver(() => ['https://auth.example.com']);
+    const guest = new EventEmitter() as EventEmitter & {
+      setWindowOpenHandler: ReturnType<typeof vi.fn>;
+    };
+    guest.setWindowOpenHandler = vi.fn();
+
+    installLoginCaptchaGuestHandlers(guest as unknown as WebContents);
+
+    expect(guest.setWindowOpenHandler).toHaveBeenCalledTimes(1);
+    expect(guest.setWindowOpenHandler.mock.calls[0]![0]({})).toEqual({ action: 'deny' });
+
+    const allowed = { preventDefault: vi.fn() };
+    guest.emit(
+      'will-redirect',
+      allowed,
+      'https://auth.example.com/captcha/turnstile?theme=dark',
+    );
+    expect(allowed.preventDefault).not.toHaveBeenCalled();
+
+    for (const eventName of ['will-navigate', 'will-redirect']) {
+      const blocked = { preventDefault: vi.fn() };
+      guest.emit(eventName, blocked, 'https://evil.example.com/captcha/turnstile');
+      expect(blocked.preventDefault).toHaveBeenCalledTimes(1);
+    }
   });
 });
 

@@ -26,13 +26,19 @@ const CHALLENGE_TIMEOUT_MS = 120_000;
 /** 解析挑战页回传结果;非本契约的 URL 返回 null(导出供单测直接断言)。 */
 export function parseLoginCaptchaResult(
   rawUrl: string,
+  challengeBaseUrl: string,
 ): { status: 'ok'; token: string } | { status: 'err'; code: string } | null {
-  let hash: string;
+  let parsed: URL;
+  let expected: URL;
   try {
-    hash = new URL(rawUrl).hash;
+    parsed = new URL(rawUrl);
+    expected = new URL(challengeBaseUrl);
   } catch {
     return null;
   }
+  // hash 结果只信任 main 已批准的托管挑战页 origin + path；query 用于主题/语言。
+  if (parsed.origin !== expected.origin || parsed.pathname !== expected.pathname) return null;
+  const hash = parsed.hash;
   if (!hash.startsWith(CAPTCHA_RESULT_HASH_PREFIX)) return null;
   const payload = hash.slice(CAPTCHA_RESULT_HASH_PREFIX.length);
   if (payload.startsWith('ok.')) {
@@ -137,7 +143,7 @@ export function LoginCaptchaOverlay({
     };
     const onInPageNavigate = (event: Electron.DidNavigateInPageEvent) => {
       if (disposed) return;
-      const result = parseLoginCaptchaResult(event.url);
+      const result = parseLoginCaptchaResult(event.url, challengeBaseUrl);
       if (!result) return;
       if (result.status === 'ok') {
         settle(result.token);

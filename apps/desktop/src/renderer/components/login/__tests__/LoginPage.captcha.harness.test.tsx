@@ -275,24 +275,51 @@ describe('LoginPage captcha 前置闸(providers 主动触发)', () => {
 describe('parseLoginCaptchaResult(挑战页 hash 回传契约)', () => {
   it('解析 ok/err,拒绝越界与非本契约 URL', () => {
     expect(
-      parseLoginCaptchaResult(`${CHALLENGE_BASE}#cindy-captcha=ok.abc%2B123`),
+      parseLoginCaptchaResult(
+        `${CHALLENGE_BASE}#cindy-captcha=ok.abc%2B123`,
+        CHALLENGE_BASE,
+      ),
     ).toEqual({ status: 'ok', token: 'abc+123' });
-    expect(parseLoginCaptchaResult(`${CHALLENGE_BASE}#cindy-captcha=err.expired`)).toEqual({
+    expect(
+      parseLoginCaptchaResult(
+        `${CHALLENGE_BASE}#cindy-captcha=err.expired`,
+        CHALLENGE_BASE,
+      ),
+    ).toEqual({
       status: 'err',
       code: 'expired',
     });
     // 越界 token(>2048)拒
     expect(
-      parseLoginCaptchaResult(`${CHALLENGE_BASE}#cindy-captcha=ok.${'a'.repeat(2049)}`),
+      parseLoginCaptchaResult(
+        `${CHALLENGE_BASE}#cindy-captcha=ok.${'a'.repeat(2049)}`,
+        CHALLENGE_BASE,
+      ),
     ).toBeNull();
     // 空 token / 非法编码 / 无关 hash / 非 URL
-    expect(parseLoginCaptchaResult(`${CHALLENGE_BASE}#cindy-captcha=ok.`)).toBeNull();
-    expect(parseLoginCaptchaResult(`${CHALLENGE_BASE}#cindy-captcha=ok.%E0%A4%A`)).toBeNull();
-    expect(parseLoginCaptchaResult(`${CHALLENGE_BASE}#other`)).toBeNull();
-    expect(parseLoginCaptchaResult('not-a-url')).toBeNull();
+    expect(
+      parseLoginCaptchaResult(`${CHALLENGE_BASE}#cindy-captcha=ok.`, CHALLENGE_BASE),
+    ).toBeNull();
+    expect(
+      parseLoginCaptchaResult(`${CHALLENGE_BASE}#cindy-captcha=ok.%E0%A4%A`, CHALLENGE_BASE),
+    ).toBeNull();
+    expect(parseLoginCaptchaResult(`${CHALLENGE_BASE}#other`, CHALLENGE_BASE)).toBeNull();
+    expect(parseLoginCaptchaResult('not-a-url', CHALLENGE_BASE)).toBeNull();
+    expect(
+      parseLoginCaptchaResult(
+        'https://evil.example.com/captcha/turnstile#cindy-captcha=ok.forged',
+        CHALLENGE_BASE,
+      ),
+    ).toBeNull();
+    expect(
+      parseLoginCaptchaResult(
+        'https://auth.scenario.invalid/redirected#cindy-captcha=ok.forged',
+        CHALLENGE_BASE,
+      ),
+    ).toBeNull();
     // 异常错误码收敛为 unknown
     expect(
-      parseLoginCaptchaResult(`${CHALLENGE_BASE}#cindy-captcha=err.<script>`),
+      parseLoginCaptchaResult(`${CHALLENGE_BASE}#cindy-captcha=err.<script>`, CHALLENGE_BASE),
     ).toEqual({ status: 'err', code: 'unknown' });
   });
 });
