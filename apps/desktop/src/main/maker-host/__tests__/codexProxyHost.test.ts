@@ -2517,6 +2517,16 @@ describe('codex proxy host', () => {
         url: '/v1/responses',
         headers: { 'thread-id': threadId, ...extra },
       });
+      const ctxForCodex145ChildPrewarm = (
+        threadId: string,
+        sessionId: string,
+        parentThreadId: string,
+      ) => ctxForThread(threadId, {
+        'session-id': sessionId,
+        'x-client-request-id': threadId,
+        'x-openai-subagent': 'collab_spawn',
+        'x-codex-parent-thread-id': parentThreadId,
+      });
 
       expect(proxyOpts.resolveWebSocketUpstream(ctxForThread('thread-ws-parent'))).toBe(
         'https://chatgpt.com/backend-api/codex',
@@ -2524,16 +2534,19 @@ describe('codex proxy host', () => {
       // 经血缘继承了 route 快照的已登记子线程拒绝 WS。
       host.registerChildThread('thread-ws-parent', 'thread-ws-child');
       expect(proxyOpts.resolveWebSocketUpstream(ctxForThread('thread-ws-child'))).toBeNull();
-      // collab_spawn 首请求可能早于 thread/started；用显式 parent header 命中快照。
-      expect(proxyOpts.resolveWebSocketUpstream(ctxForThread('thread-ws-child-2', {
-        'x-openai-subagent': 'collab_spawn',
-        'x-codex-parent-thread-id': 'thread-ws-parent',
-      }))).toBeNull();
+      // 0.145.0 child startup prewarm 可能早于 thread/started；完整握手 metadata
+      // 通过显式 parent header 命中路由快照，null 由 proxy 映射为 426。
+      expect(proxyOpts.resolveWebSocketUpstream(ctxForCodex145ChildPrewarm(
+        'thread-ws-child-2',
+        'session-ws-child-2',
+        'thread-ws-parent',
+      ))).toBeNull();
       // 未配置独立 route 的 collab child 不应被全局降级。
-      expect(proxyOpts.resolveWebSocketUpstream(ctxForThread('thread-openai-child', {
-        'x-openai-subagent': 'collab_spawn',
-        'x-codex-parent-thread-id': 'thread-openai-main',
-      }))).toBe(
+      expect(proxyOpts.resolveWebSocketUpstream(ctxForCodex145ChildPrewarm(
+        'thread-openai-child',
+        'session-openai-child',
+        'thread-openai-main',
+      ))).toBe(
         'https://chatgpt.com/backend-api/codex',
       );
     } finally {
