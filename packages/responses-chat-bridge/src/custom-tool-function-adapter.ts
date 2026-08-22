@@ -6,6 +6,11 @@ import { ChatBridgeToolContext, type ChatBridgeToolSpec } from './tool-context.j
 import type { ResponsesRequest } from './types.js';
 
 const MAX_PENDING_BYTES = 16 * 1024 * 1024;
+const MAX_PENDING_REQUESTS = 256;
+// The desktop proxy's upstream socket timeout is ten minutes. Keep mappings strictly longer so
+// no request that can still be live is evicted, while failed/cancelled requests are eventually
+// reclaimed instead of exhausting the bounded map for the rest of the process lifetime.
+const PENDING_REQUEST_TTL_MS = 15 * 60 * 1000;
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -45,6 +50,14 @@ interface AdaptedCall {
   input?: string;
 }
 
+/**
+ * Restores one adapted upstream response to the Responses custom-tool dialect.
+ *
+ * SSE frames may split UTF-8, JSON, and parallel function arguments across chunks, so `pending`
+ * holds incomplete framing while `calls` tracks each output index until its matching done event.
+ * Non-streaming JSON is buffered until EOF. Invalid adapted arguments and oversized buffers fail
+ * explicitly because passing a function call through would make Codex execute the wrong protocol.
+ */
 class CustomToolResponseTransform extends Transform {
   private readonly decoder = new TextDecoder();
   private readonly calls = new Map<number, AdaptedCall>();
@@ -56,6 +69,7 @@ class CustomToolResponseTransform extends Transform {
   ) {
     super();
   }
+
   private rewriteItem(item: unknown, call?: AdaptedCall): Record<string, unknown> | null {
     if (!isObject(item) || item.type !== 'function_call') return null;
     const spec = call?.spec ?? (typeof item.name === 'string' ? this.specs.get(item.name) : undefined);
@@ -142,6 +156,7 @@ class CustomToolResponseTransform extends Transform {
     )).join('');
   }
   private drainFrames(): void {
+    // Keep the incomplete tail in `pending`; only complete SSE frames are safe to rewrite.
     for (;;) {
       const lf = this.pending.indexOf('\n\n');
       const crlf = this.pending.indexOf('\r\n\r\n');
@@ -171,6 +186,7 @@ class CustomToolResponseTransform extends Transform {
         this.drainFrames();
         if (this.pending) this.push(this.rewriteFrame(this.pending, ''));
       } else {
+        // A JSON response has no stable item boundary before EOF, so rewrite it as one document.
         const parsed = JSON.parse(this.pending) as unknown;
         const rewritten = this.rewriteEvent({ type: 'response.completed', response: parsed });
         this.push(JSON.stringify(rewritten?.[0]?.response ?? parsed));
@@ -195,7 +211,17 @@ export function createResponsesCustomToolFunctionAdapter(
   customToolNames: readonly string[],
 ): ResponsesCustomToolFunctionAdapter {
   const selected = new Set(customToolNames);
-  const responseSpecs = new Map<number, Map<string, ChatBridgeToolSpec>>();
+  const responseSpecs = new Map<number, {
+    specs: Map<string, ChatBridgeToolSpec>;
+    createdAt: number;
+  }>();
+
+  const discardExpiredResponseSpecs = (now: number): void => {
+    for (const [requestId, pending] of responseSpecs) {
+      if (now - pending.createdAt >= PENDING_REQUEST_TTL_MS) responseSpecs.delete(requestId);
+    }
+  };
+
   return {
     adaptRequest(body, requestId) {
       if (!isObject(body) || !Array.isArray(body.tools)) return null;
@@ -252,16 +278,21 @@ export function createResponsesCustomToolFunctionAdapter(
         const name = functionNames.get(toolChoice.name);
         if (name) toolChoice = { type: 'function', name };
       }
-      if (responseSpecs.size >= 256) responseSpecs.clear();
-      responseSpecs.set(requestId, specs);
+      const now = Date.now();
+      discardExpiredResponseSpecs(now);
+      if (!responseSpecs.has(requestId) && responseSpecs.size >= MAX_PENDING_REQUESTS) {
+        throw new Error('too many in-flight custom tool requests to adapt safely');
+      }
+      responseSpecs.set(requestId, { specs, createdAt: now });
       const adapted: Record<string, unknown> = { ...body, tools, input };
       if (Object.hasOwn(body, 'tool_choice')) adapted.tool_choice = toolChoice;
       return adapted;
     },
 
     createResponseTransform(requestId, response) {
-      const specs = responseSpecs.get(requestId);
+      const pending = responseSpecs.get(requestId);
       responseSpecs.delete(requestId);
+      const specs = pending?.specs;
       if (!specs?.size) return null;
       const encoding = response.contentEncoding.trim().toLowerCase();
       if (encoding && encoding !== 'identity') {

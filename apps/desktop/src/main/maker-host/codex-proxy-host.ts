@@ -1951,11 +1951,18 @@ function needsExecFunctionAdapter(
 ): boolean {
   const requestModel = typeof body.model === 'string' ? body.model : '';
   const providerContext = providerContextForRequest(ctx.headers, requestModel);
-  if (DEEPSEEK_V4_MODELS.has(providerContext.catalogModel)) return true;
-
   const providerId = providerContext.providerId ?? inferProviderIdForModel(requestModel, 'codex');
-  const wireModel = providerContext.subagentRoute?.catalogModel ?? requestModel;
-  return providerId === 'xai' && providerRoutingServesWireModel('xai', 'codex', wireModel);
+  const routing = providerContext.subagentRoute
+    ? getProviderRoutingDescriptor(
+        providerContext.subagentRoute.providerId,
+        'codex',
+        providerContext.subagentRoute.catalogModel,
+      )
+    : providerContext.sessionId
+      ? getSessionRoutingDescriptor(providerContext.sessionId, 'codex', requestModel)
+      : getProviderRoutingDescriptor(providerId, 'codex', requestModel);
+  return (routing?.wireProtocol ?? 'openai-responses') === 'openai-responses'
+    && routing?.supportsResponsesCustomTools === false;
 }
 
 /**
@@ -2655,9 +2662,9 @@ function createTransformRequestChain(
       enabled: () => true,
       strip: sanitizeXaiModelInputFromBody,
     }),
-    // xAI and DeepSeek V4 accept ordinary function tools but not Codex's custom
-    // `exec` dialect. Adapt before their tool/history sanitizers, then restore
-    // custom_tool_call events on the matching response stream.
+    // Providers that explicitly lack Responses custom tools still accept ordinary
+    // functions. Adapt before provider sanitizers, then restore custom_tool_call
+    // events on the matching response stream.
     (body, ctx) => isPlainObject(body) && needsExecFunctionAdapter(body, ctx)
       ? execAdapter.adaptRequest(body, ctx.reqId)
       : null,
