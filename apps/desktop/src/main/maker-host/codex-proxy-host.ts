@@ -1948,19 +1948,52 @@ function createXaiResponsesCompatTransform(): RequestTransform {
 function needsExecFunctionAdapter(
   body: Record<string, unknown>,
   ctx: RequestTransformCtx,
+  frozenAuthInjection?: CodexProxyAuthInjection,
 ): boolean {
   const requestModel = typeof body.model === 'string' ? body.model : '';
   const providerContext = providerContextForRequest(ctx.headers, requestModel);
-  const providerId = providerContext.providerId ?? inferProviderIdForModel(requestModel, 'codex');
-  const routing = providerContext.subagentRoute
-    ? getProviderRoutingDescriptor(
-        providerContext.subagentRoute.providerId,
-        'codex',
-        providerContext.subagentRoute.catalogModel,
-      )
-    : providerContext.sessionId
-      ? getSessionRoutingDescriptor(providerContext.sessionId, 'codex', requestModel)
-      : getProviderRoutingDescriptor(providerId, 'codex', requestModel);
+  const authInjection = frozenAuthInjection ?? getCodexProxyAuthInjection();
+  const implicitProviderId = inferProviderIdForModel(requestModel, 'codex');
+  let routing: ReturnType<typeof getProviderRoutingDescriptor> = null;
+
+  if (providerContext.subagentRoute) {
+    routing = getProviderRoutingDescriptor(
+      providerContext.subagentRoute.providerId,
+      'codex',
+      providerContext.subagentRoute.catalogModel,
+    );
+  } else if (providerContext.providerId) {
+    // A built-in provider recorded on the session is not necessarily the
+    // provider that receives the request. In env-key mode, for example, the
+    // built-in OpenAI session still falls through to the default XD gateway.
+    // Compatibility transforms must inspect that same effective route rather
+    // than the session's stale provider label.
+    const adopted = explicitProviderRouteIsAdopted(
+      providerContext.sessionId,
+      undefined,
+      authInjection,
+    );
+    routing = adopted
+      ? getSessionRoutingDescriptor(providerContext.sessionId!, 'codex', requestModel)
+      : getProviderRoutingDescriptor('xd', 'codex', requestModel);
+  } else if (implicitProviderId) {
+    // Only implicit provider-oauth routes are adopted without a session. A
+    // user/API-key provider merely sharing a model id does not win routing.
+    const inferred = getProviderRoutingDescriptor(implicitProviderId, 'codex', requestModel);
+    routing = inferred?.authStrategy === 'provider-oauth-header' ? inferred : null;
+  }
+
+  if (!routing) {
+    // Mirror decideCodexRoute's default destination: oauth-bearer regular
+    // models stay on ChatGPT, while env-key/provider-oauth and codex/* models
+    // use the XD gateway's Responses compatibility contract.
+    const defaultProviderId =
+      authInjection === 'oauth-bearer' && gatewayProviderIdForRewrittenModel(requestModel) === null
+        ? 'openai'
+        : 'xd';
+    routing = getProviderRoutingDescriptor(defaultProviderId, 'codex', requestModel);
+  }
+
   return (routing?.wireProtocol ?? 'openai-responses') === 'openai-responses'
     && routing?.supportsResponsesCustomTools === false;
 }
@@ -2665,7 +2698,7 @@ function createTransformRequestChain(
     // Providers that explicitly lack Responses custom tools still accept ordinary
     // functions. Adapt before provider sanitizers, then restore custom_tool_call
     // events on the matching response stream.
-    (body, ctx) => isPlainObject(body) && needsExecFunctionAdapter(body, ctx)
+    (body, ctx) => isPlainObject(body) && needsExecFunctionAdapter(body, ctx, frozenAuthInjection)
       ? execAdapter.adaptRequest(body, ctx.reqId)
       : null,
     createStrictGatewayHistoryCompatTransform(),

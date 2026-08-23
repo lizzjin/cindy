@@ -175,6 +175,44 @@ describe('anthropic-compat-proxy loopback port guard', () => {
     expect(JSON.parse(requestBody)).toEqual({ model: 'test-model', routed: true });
   });
 
+  it('fails the client when a response transform rejects during async flush', async () => {
+    const upstream = await startFakeUpstream((_idx, _body, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"ok":true}');
+    });
+    upstreamClose = upstream.close;
+    proxy = await createAnthropicCompatProxy({
+      upstream: upstream.url,
+      transformRequest: [],
+      transformResponse: () => new Transform({
+        transform(chunk, _encoding, callback) {
+          callback(null, chunk);
+        },
+        flush(callback) {
+          setImmediate(() => callback(new Error('response transform flush failed')));
+        },
+      }),
+    });
+
+    const controller = new AbortController();
+    const resultPromise = fetch(`${proxy.url}/v1/responses`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{"model":"test-model"}',
+      signal: controller.signal,
+    }).then(async (response) => {
+      await response.text();
+      return 'resolved' as const;
+    }).catch(() => 'rejected' as const);
+    const result = await Promise.race([
+      resultPromise,
+      new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 1_000)),
+    ]);
+    controller.abort();
+
+    expect(result).toBe('rejected');
+  });
+
   it('jumps out of a Windows excluded-port range after EACCES and cleans listeners', async () => {
     const attemptedPorts: number[] = [];
     let boundPort = 0;

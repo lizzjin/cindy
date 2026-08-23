@@ -266,6 +266,67 @@ describe("Responses custom-tool function adapter", () => {
     ).not.toBeNull();
   });
 
+  it("bounds incomplete parallel response calls", async () => {
+    const adapter = createResponsesCustomToolFunctionAdapter(["exec"]);
+    const adapted = adapter.adaptRequest(execRequest(), 5) as {
+      tools: Array<{ name: string }>;
+    };
+    const functionName = adapted.tools[0]!.name;
+    const responseTransform = adapter.createResponseTransform(5, {
+      contentType: "text/event-stream",
+      contentEncoding: "",
+    });
+    const frames = Array.from({ length: 257 }, (_, outputIndex) => (
+      `data: ${JSON.stringify({
+        type: "response.output_item.added",
+        output_index: outputIndex,
+        item: {
+          type: "function_call",
+          name: functionName,
+          call_id: `call-${outputIndex}`,
+          arguments: "",
+        },
+      })}\n\n`
+    )).join("");
+
+    await expect(collect(responseTransform!, frames)).rejects.toThrow(
+      /too many active calls/i,
+    );
+  });
+
+  it("bounds accumulated response call arguments", async () => {
+    const adapter = createResponsesCustomToolFunctionAdapter(["exec"]);
+    const adapted = adapter.adaptRequest(execRequest(), 6) as {
+      tools: Array<{ name: string }>;
+    };
+    const functionName = adapted.tools[0]!.name;
+    const responseTransform = adapter.createResponseTransform(6, {
+      contentType: "text/event-stream",
+      contentEncoding: "",
+    });
+    const frames = [
+      `data: ${JSON.stringify({
+        type: "response.output_item.added",
+        output_index: 0,
+        item: {
+          type: "function_call",
+          name: functionName,
+          call_id: "call-0",
+          arguments: "",
+        },
+      })}\n\n`,
+      `data: ${JSON.stringify({
+        type: "response.function_call_arguments.delta",
+        output_index: 0,
+        delta: "x".repeat(16 * 1024 * 1024 + 1),
+      })}\n\n`,
+    ].join("");
+
+    await expect(collect(responseTransform!, frames)).rejects.toThrow(
+      /arguments exceed the 16 MiB limit/i,
+    );
+  });
+
   it("keeps live mappings beyond five minutes instead of expiring them by wall clock", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-22T00:00:00Z"));

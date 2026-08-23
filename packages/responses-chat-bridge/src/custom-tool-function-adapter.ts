@@ -7,6 +7,8 @@ import type { ResponsesRequest } from './types.js';
 
 const MAX_PENDING_BYTES = 16 * 1024 * 1024;
 const MAX_PENDING_REQUESTS = 256;
+const MAX_ACTIVE_RESPONSE_CALLS = 256;
+const MAX_RESPONSE_ARGUMENT_BYTES = 16 * 1024 * 1024;
 // The desktop proxy's upstream socket timeout is ten minutes. Keep mappings strictly longer so
 // no request that can still be live is evicted, while failed/cancelled requests are eventually
 // reclaimed instead of exhausting the bounded map for the rest of the process lifetime.
@@ -62,6 +64,7 @@ class CustomToolResponseTransform extends Transform {
   private readonly decoder = new TextDecoder();
   private readonly calls = new Map<number, AdaptedCall>();
   private pending = '';
+  private responseArgumentBytes = 0;
 
   constructor(
     private readonly specs: ReadonlyMap<string, ChatBridgeToolSpec>,
@@ -91,9 +94,22 @@ class CustomToolResponseTransform extends Transform {
         ? this.specs.get(event.item.name)
         : undefined;
       if (!spec || index < 0) return null;
+      const argumentsText = typeof event.item.arguments === 'string' ? event.item.arguments : '';
+      const previous = this.calls.get(index);
+      if (!previous && this.calls.size >= MAX_ACTIVE_RESPONSE_CALLS) {
+        throw new Error('adapted custom tool response has too many active calls');
+      }
+      const nextArgumentBytes =
+        this.responseArgumentBytes
+        - (previous ? Buffer.byteLength(previous.arguments, 'utf8') : 0)
+        + Buffer.byteLength(argumentsText, 'utf8');
+      if (nextArgumentBytes > MAX_RESPONSE_ARGUMENT_BYTES) {
+        throw new Error('adapted custom tool response arguments exceed the 16 MiB limit');
+      }
+      this.responseArgumentBytes = nextArgumentBytes;
       this.calls.set(index, {
         spec,
-        arguments: typeof event.item.arguments === 'string' ? event.item.arguments : '',
+        arguments: argumentsText,
       });
       const item: Record<string, unknown> = {
         ...event.item, type: 'custom_tool_call', name: spec.name, input: '',
@@ -104,7 +120,14 @@ class CustomToolResponseTransform extends Transform {
 
     const call = this.calls.get(index);
     if (event.type === 'response.function_call_arguments.delta' && call) {
-      if (typeof event.delta === 'string') call.arguments += event.delta;
+      if (typeof event.delta === 'string') {
+        const deltaBytes = Buffer.byteLength(event.delta, 'utf8');
+        if (this.responseArgumentBytes + deltaBytes > MAX_RESPONSE_ARGUMENT_BYTES) {
+          throw new Error('adapted custom tool response arguments exceed the 16 MiB limit');
+        }
+        call.arguments += event.delta;
+        this.responseArgumentBytes += deltaBytes;
+      }
       return [];
     }
     if (event.type === 'response.function_call_arguments.done' && call) {
@@ -123,6 +146,7 @@ class CustomToolResponseTransform extends Transform {
       const item = this.rewriteItem(event.item, call);
       if (!item) return null;
       this.calls.delete(index);
+      this.responseArgumentBytes -= call ? Buffer.byteLength(call.arguments, 'utf8') : 0;
       return [{ ...event, item }];
     }
     if (isObject(event.response) && Array.isArray(event.response.output)) {

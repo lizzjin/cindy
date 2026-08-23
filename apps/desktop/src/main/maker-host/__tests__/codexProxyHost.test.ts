@@ -4223,6 +4223,96 @@ describe('codex proxy host', () => {
     }
   });
 
+  it('adapts exec when env-key falls through a built-in OpenAI session to XD', async () => {
+    const host = await freshCodexProxyHost();
+    const { setSessionProvider, clearSessionProvider } = await import('../session-provider-store.js');
+    host.setCodexProxyAuthInjection('env-key');
+    mockState.createAnthropicCompatProxy.mockResolvedValueOnce({
+      url: 'http://127.0.0.1:43210',
+      dispose: vi.fn(async () => undefined),
+    });
+    await host.ensureCodexProxyReady();
+    host.registerComposed('session-openai-envkey-exec', 'thread-openai-envkey-exec', 'PRODUCT_PROMPT');
+    setSessionProvider('session-openai-envkey-exec', 'openai');
+
+    try {
+      const transforms = mockState.createAnthropicCompatProxy.mock.calls[0]?.[0]?.transformRequest ?? [];
+      let current: unknown = {
+        model: 'gpt-5.5',
+        tools: [
+          { type: 'custom', name: 'exec', description: 'run a command' },
+          { type: 'function', name: 'read_file', parameters: { type: 'object' } },
+        ],
+        tool_choice: { type: 'custom', name: 'exec' },
+      };
+      const ctx = {
+        reqId: 3262,
+        method: 'POST',
+        url: '/responses',
+        headers: { 'thread-id': 'thread-openai-envkey-exec' },
+      };
+      for (const transform of transforms) {
+        const next = transform(current, ctx);
+        if (next !== null && next !== undefined) current = next;
+      }
+
+      expect(current).toMatchObject({
+        tools: [
+          expect.objectContaining({
+            type: 'function',
+            name: 'exec',
+            parameters: expect.objectContaining({ required: ['input'] }),
+          }),
+          { type: 'function', name: 'read_file', parameters: { type: 'object' } },
+        ],
+        tool_choice: expect.objectContaining({ type: 'function' }),
+      });
+    } finally {
+      host.unregister('session-openai-envkey-exec');
+      clearSessionProvider('session-openai-envkey-exec');
+    }
+  });
+
+  it('keeps native exec when oauth-bearer adopts the built-in OpenAI session', async () => {
+    const host = await freshCodexProxyHost();
+    const { setSessionProvider, clearSessionProvider } = await import('../session-provider-store.js');
+    host.setCodexProxyAuthInjection('oauth-bearer');
+    mockState.createAnthropicCompatProxy.mockResolvedValueOnce({
+      url: 'http://127.0.0.1:43210',
+      dispose: vi.fn(async () => undefined),
+    });
+    await host.ensureCodexProxyReady();
+    host.registerComposed('session-openai-oauth-exec', 'thread-openai-oauth-exec', 'PRODUCT_PROMPT');
+    setSessionProvider('session-openai-oauth-exec', 'openai');
+
+    try {
+      const transforms = mockState.createAnthropicCompatProxy.mock.calls[0]?.[0]?.transformRequest ?? [];
+      let current: unknown = {
+        model: 'gpt-5.5',
+        tools: [{ type: 'custom', name: 'exec', description: 'run a command' }],
+        tool_choice: { type: 'custom', name: 'exec' },
+      };
+      const ctx = {
+        reqId: 3263,
+        method: 'POST',
+        url: '/responses',
+        headers: { 'thread-id': 'thread-openai-oauth-exec' },
+      };
+      for (const transform of transforms) {
+        const next = transform(current, ctx);
+        if (next !== null && next !== undefined) current = next;
+      }
+
+      expect(current).toMatchObject({
+        tools: [{ type: 'custom', name: 'exec' }],
+        tool_choice: { type: 'custom', name: 'exec' },
+      });
+    } finally {
+      host.unregister('session-openai-oauth-exec');
+      clearSessionProvider('session-openai-oauth-exec');
+    }
+  });
+
   it('keeps parallel strict-gateway tool calls grouped before their matched outputs', async () => {
     const host = await freshCodexProxyHost();
     mockState.createAnthropicCompatProxy.mockResolvedValueOnce({

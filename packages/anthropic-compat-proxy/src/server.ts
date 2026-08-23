@@ -880,6 +880,11 @@ function forward(
   // upstreamReq.error 或 upstreamRes.error。request 侧通过这个回调汇入当前
   // response 的终态处理,保证 observer 与下游收口语义不受事件先后影响。
   let failActiveResponse: ((err: unknown) => void) | null = null;
+  // upstreamRes emits `end` before a request-scoped response Transform finishes
+  // its _flush. Keep those downstream transforms pending so an async flush
+  // error can still fail the client instead of being mistaken for a harmless
+  // post-end event.
+  const pendingResponseTransforms = new Set<Transform>();
 
   const finishClientAfterUpstreamFailure = (
     err: Error,
@@ -1159,7 +1164,10 @@ function forward(
       reason: 'error' | 'aborted' | 'close',
       rawError?: unknown,
     ): void => {
-      if (upstreamResponseTerminal !== null) return;
+      const isPendingTransformFailure =
+        upstreamResponseTerminal === 'end' && pendingResponseTransforms.size > 0;
+      if (upstreamResponseTerminal !== null && !isPendingTransformFailure) return;
+      if (isPendingTransformFailure) pendingResponseTransforms.clear();
       upstreamResponseTerminal = reason;
       // 客户端主动停止是预期的取消路径,不应再通知 observer 为上游故障。
       if (clientAborted || clientRes.destroyed) return;
@@ -1299,6 +1307,11 @@ function forward(
       clientRes.writeHead(status, upstreamRes.statusMessage, respHeaders);
       const responseTransforms = [responseBodyTransform, toolUseIdRewrite]
         .filter((value): value is Transform => value !== null);
+      for (const transform of responseTransforms) {
+        pendingResponseTransforms.add(transform);
+        const settle = () => pendingResponseTransforms.delete(transform);
+        transform.once('end', settle);
+      }
       const dest = responseTransforms[0] ?? clientRes;
       // 门控期间积累的待发字节(非门控路径恒为空)先写出,再切回字节级 pipe ——
       // pipe 是 SSE 零延迟的命脉('data' 监听只做计数+错误体收集,不影响流)。
