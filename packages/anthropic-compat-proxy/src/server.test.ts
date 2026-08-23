@@ -1592,6 +1592,29 @@ describe('anthropic-compat-proxy mixed sync+async transform chain', () => {
     // 抛错的 async transform 被跳过，后续 sync transform 照常执行。
     expect(JSON.parse(custom.bodies[0]).survived).toBe(true);
   });
+
+  it('rejects locally when a fail-closed request transform throws', async () => {
+    const custom = await startFakeUpstream((_i, _body, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{}');
+    });
+    upstreamClose = custom.close;
+    const rejectingTransform: RequestTransform = () => {
+      throw new Error('request cannot be adapted safely');
+    };
+    rejectingTransform.errorMode = 'reject-request';
+
+    proxy = await createAnthropicCompatProxy({
+      upstream: custom.url,
+      transformRequest: [rejectingTransform],
+    });
+
+    const response = await post(proxy.url, { model: 'original', input: [] });
+
+    expect(response.status).toBe(502);
+    expect(JSON.parse(response.text)).toMatchObject({ error: { type: 'proxy_error' } });
+    expect(custom.bodies).toHaveLength(0);
+  });
 });
 
 // 跨厂商切回 Anthropic 模型: 历史里 gpt 留下的空壳 thinking 块 + 后面一句 text。

@@ -52,6 +52,11 @@ export interface RequestTransform {
     ctx: RequestTransformCtx,
   ): unknown | null | Promise<unknown | null>;
   /**
+   * Error handling for this transform. The default keeps the historical fail-open behavior;
+   * transforms that must not expose their unadapted input upstream can reject the request.
+   */
+  errorMode?: 'reject-request';
+  /**
    * Optional cleanup for request-scoped state created while evaluating this transform.
    * Called once after a request that entered the transform chain finishes or closes.
    */

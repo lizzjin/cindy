@@ -565,7 +565,7 @@ function respondRequestTooLarge(opts: {
 }
 
 /**
- * 跑 transform 链。任一 transform 抛错 → 返回 null(走透传保命)。
+ * 跑 transform 链。transform 默认抛错时跳过；显式标记 reject-request 时中止请求。
  * 所有 transform 都返回 null → 也返回 null(透传)。
  * 至少一个 transform 改了 body → 返回最新的 body。
  *
@@ -602,6 +602,7 @@ async function runTransforms(
         mutated = true;
       }
     } catch (err) {
+      if (t.errorMode === 'reject-request') throw err;
       logger.warn?.('transform threw, skipping it', { err: String(err) });
     }
   }
@@ -1854,7 +1855,22 @@ export async function createAnthropicCompatProxy(opts: ProxyOptions): Promise<Pr
       ...requestCtx,
       upstreamBase: formatUpstreamBase(route.target),
     };
-    const transformed = await runTransforms(rawBody, contentType, transforms, transformCtx, logger);
+    let transformed: Buffer | null;
+    try {
+      transformed = await runTransforms(rawBody, contentType, transforms, transformCtx, logger);
+    } catch (err) {
+      transformsCompleted = true;
+      notifyTransformSettlement();
+      logger.warn?.('request transform rejected request', { reqId, err: String(err) });
+      res.writeHead(502, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({
+        error: {
+          type: 'proxy_error',
+          message: 'request could not be transformed safely',
+        },
+      }));
+      return;
+    }
     transformsCompleted = true;
     notifyTransformSettlement();
     const outBody = transformed ?? rawBody;

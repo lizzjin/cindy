@@ -276,6 +276,7 @@ export function createResponsesCustomToolFunctionAdapter(
       if (Array.isArray(body.input)) {
         for (const item of body.input) {
           if (isObject(item) && item.type === 'custom_tool_call'
+            && !Object.hasOwn(item, 'namespace')
             && typeof item.name === 'string' && typeof item.call_id === 'string') {
             const functionName = functionNames.get(item.name);
             if (functionName) calls.set(item.call_id, functionName);

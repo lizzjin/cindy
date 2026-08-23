@@ -2667,6 +2667,7 @@ function createTransformRequestChain(
     isPlainObject(body) && needsExecFunctionAdapter(body, ctx, frozenAuthInjection)
       ? execAdapter.adaptRequest(body, ctx.reqId)
       : null;
+  execFunctionAdapterTransform.errorMode = 'reject-request';
   execFunctionAdapterTransform.onRequestSettled = (requestId) => {
     execAdapter.releaseResponse(requestId);
   };

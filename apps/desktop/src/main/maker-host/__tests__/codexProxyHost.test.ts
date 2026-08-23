@@ -2416,12 +2416,17 @@ describe('codex proxy host', () => {
     );
     const proxyOpts = mockState.createAnthropicCompatProxy.mock.calls[0][0] as {
       upstream: () => string;
-      transformRequest: Array<{ onRequestSettled?: (requestId: number) => void }>;
+      transformRequest: Array<{
+        errorMode?: 'reject-request';
+        onRequestSettled?: (requestId: number) => void;
+      }>;
     };
     expect(proxyOpts.upstream()).toBe(`${XD_GATEWAY_BASE_URL}/v1`);
-    expect(
-      proxyOpts.transformRequest.filter((transform) => transform.onRequestSettled),
-    ).toHaveLength(1);
+    const requestScopedTransforms = proxyOpts.transformRequest.filter(
+      (transform) => transform.onRequestSettled,
+    );
+    expect(requestScopedTransforms).toHaveLength(1);
+    expect(requestScopedTransforms[0]?.errorMode).toBe('reject-request');
   });
 
   it('only resolves the websocket upstream for the oauth-bearer spawn identity', async () => {

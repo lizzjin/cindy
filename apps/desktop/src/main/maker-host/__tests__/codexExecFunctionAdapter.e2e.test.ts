@@ -115,7 +115,9 @@ describe.skipIf(!codexBoundaryAvailable)('Codex custom exec function adapter E2E
         ? "Get-Content -LiteralPath 'issue-3168-fixture.txt' -Raw"
         : "cat 'issue-3168-fixture.txt'";
     const code = [
-      `const result = await tools.exec_command(${JSON.stringify({ cmd: command })});`,
+      'const result = typeof tools.exec_command === "function"',
+      `  ? await tools.exec_command(${JSON.stringify({ cmd: command })})`,
+      `  : await tools.shell_command(${JSON.stringify({ command })});`,
       'text(JSON.stringify(result));',
     ].join('\n');
 

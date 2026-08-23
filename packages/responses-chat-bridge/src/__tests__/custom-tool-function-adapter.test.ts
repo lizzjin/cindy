@@ -206,6 +206,42 @@ describe("Responses custom-tool function adapter", () => {
     ]);
   });
 
+  it("keeps namespaced same-name custom tool history untouched", () => {
+    const adapter = createResponsesCustomToolFunctionAdapter(["exec"]);
+    const namespacedHistory = [
+      {
+        type: "custom_tool_call",
+        call_id: "plugin-exec-call",
+        namespace: "plugin",
+        name: "exec",
+        input: "plugin input",
+      },
+      {
+        type: "custom_tool_call_output",
+        call_id: "plugin-exec-call",
+        output: "plugin output",
+      },
+    ];
+
+    const adapted = adapter.adaptRequest(
+      {
+        ...execRequest(),
+        tools: [
+          ...execRequest().tools,
+          {
+            type: "namespace",
+            name: "plugin",
+            tools: [{ type: "custom", name: "exec" }],
+          },
+        ],
+        input: namespacedHistory,
+      },
+      7,
+    ) as Record<string, unknown>;
+
+    expect(adapted.input).toEqual(namespacedHistory);
+  });
+
   it("restores adapted function calls in a JSON response", async () => {
     const adapter = createResponsesCustomToolFunctionAdapter(["exec"]);
     const adapted = adapter.adaptRequest(execRequest(), 2) as {
