@@ -1657,7 +1657,29 @@ export async function createAnthropicCompatProxy(opts: ProxyOptions): Promise<Pr
   const server: Server = createServer(async (req, res) => {
     inflight++;
     const reqId = ++reqIdSeq;
-    res.on('close', () => { inflight--; });
+    let responseSettled = false;
+    let transformsCompleted = false;
+    let transformSettlementNotified = false;
+    const notifyTransformSettlement = (): void => {
+      if (!responseSettled || !transformsCompleted || transformSettlementNotified) return;
+      transformSettlementNotified = true;
+      for (const transform of transforms) {
+        try {
+          transform.onRequestSettled?.(reqId);
+        } catch (err) {
+          logger.warn?.('request transform settlement hook threw', { reqId, err: String(err) });
+        }
+      }
+    };
+    const markResponseSettled = (): void => {
+      responseSettled = true;
+      notifyTransformSettlement();
+    };
+    res.once('finish', markResponseSettled);
+    res.once('close', () => {
+      inflight--;
+      markResponseSettled();
+    });
 
     const method = req.method ?? 'GET';
     const url = req.url ?? '/';
@@ -1833,6 +1855,8 @@ export async function createAnthropicCompatProxy(opts: ProxyOptions): Promise<Pr
       upstreamBase: formatUpstreamBase(route.target),
     };
     const transformed = await runTransforms(rawBody, contentType, transforms, transformCtx, logger);
+    transformsCompleted = true;
+    notifyTransformSettlement();
     const outBody = transformed ?? rawBody;
 
     let parsedForRewrite: unknown = rawParsed;

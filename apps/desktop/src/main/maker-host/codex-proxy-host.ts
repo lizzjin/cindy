@@ -2663,6 +2663,13 @@ function createTransformRequestChain(
   frozenAuthInjection?: CodexProxyAuthInjection,
   execAdapter = createResponsesCustomToolFunctionAdapter(['exec']),
 ): RequestTransform[] {
+  const execFunctionAdapterTransform: RequestTransform = (body, ctx) =>
+    isPlainObject(body) && needsExecFunctionAdapter(body, ctx, frozenAuthInjection)
+      ? execAdapter.adaptRequest(body, ctx.reqId)
+      : null;
+  execFunctionAdapterTransform.onRequestSettled = (requestId) => {
+    execAdapter.releaseResponse(requestId);
+  };
   const transforms: RequestTransform[] = [
     createActiveStripTransform({
       controller: encryptedStripController,
@@ -2698,9 +2705,7 @@ function createTransformRequestChain(
     // Providers that explicitly lack Responses custom tools still accept ordinary
     // functions. Adapt before provider sanitizers, then restore custom_tool_call
     // events on the matching response stream.
-    (body, ctx) => isPlainObject(body) && needsExecFunctionAdapter(body, ctx, frozenAuthInjection)
-      ? execAdapter.adaptRequest(body, ctx.reqId)
-      : null,
+    execFunctionAdapterTransform,
     createStrictGatewayHistoryCompatTransform(),
     // Gateway / LiteLLM / 自定义 grok 不走 xAI 订阅 transform，但仍必须在
     // ModelInput deserialize 前洗 input[]。订阅直连那条会再洗一次（幂等）。

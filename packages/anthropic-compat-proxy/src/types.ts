@@ -46,10 +46,17 @@ export interface RequestTransformCtx {
  *   - 新的 body 对象 → 代理用它替换原 body 转发上游
  *   - null            → 不改写,这一步跳过(还会继续跑后续 transform;全部跳过则字节透传)
  */
-export type RequestTransform = (
-  body: unknown,
-  ctx: RequestTransformCtx,
-) => unknown | null | Promise<unknown | null>;
+export interface RequestTransform {
+  (
+    body: unknown,
+    ctx: RequestTransformCtx,
+  ): unknown | null | Promise<unknown | null>;
+  /**
+   * Optional cleanup for request-scoped state created while evaluating this transform.
+   * Called once after a request that entered the transform chain finishes or closes.
+   */
+  onRequestSettled?: (requestId: number) => void;
+}
 
 /**
  * 本地 handler —— 路由决策命中 `localHandler` 时,代理**不转发上游**,由 handler 直接消费

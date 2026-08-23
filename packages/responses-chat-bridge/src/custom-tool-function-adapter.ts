@@ -225,6 +225,8 @@ class CustomToolResponseTransform extends Transform {
 
 export interface ResponsesCustomToolFunctionAdapter {
   adaptRequest(body: unknown, requestId: number): unknown | null;
+  /** Idempotently release request-scoped response metadata after the request settles. */
+  releaseResponse(requestId: number): void;
   createResponseTransform(requestId: number, response: {
     contentType: string; contentEncoding: string;
   }): Transform | null;
@@ -311,6 +313,10 @@ export function createResponsesCustomToolFunctionAdapter(
       const adapted: Record<string, unknown> = { ...body, tools, input };
       if (Object.hasOwn(body, 'tool_choice')) adapted.tool_choice = toolChoice;
       return adapted;
+    },
+
+    releaseResponse(requestId) {
+      responseSpecs.delete(requestId);
     },
 
     createResponseTransform(requestId, response) {

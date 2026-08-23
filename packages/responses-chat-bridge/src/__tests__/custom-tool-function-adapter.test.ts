@@ -266,6 +266,22 @@ describe("Responses custom-tool function adapter", () => {
     ).not.toBeNull();
   });
 
+  it("releases settled request mappings before the timeout", () => {
+    const adapter = createResponsesCustomToolFunctionAdapter(["exec"]);
+    for (let requestId = 1; requestId <= 256; requestId += 1) {
+      expect(adapter.adaptRequest(execRequest(), requestId)).not.toBeNull();
+      adapter.releaseResponse(requestId);
+    }
+
+    expect(adapter.adaptRequest(execRequest(), 257)).not.toBeNull();
+    expect(
+      adapter.createResponseTransform(257, {
+        contentType: "application/json",
+        contentEncoding: "",
+      }),
+    ).not.toBeNull();
+  });
+
   it("bounds incomplete parallel response calls", async () => {
     const adapter = createResponsesCustomToolFunctionAdapter(["exec"]);
     const adapted = adapter.adaptRequest(execRequest(), 5) as {

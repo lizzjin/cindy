@@ -30,7 +30,7 @@ import {
 import { createXaiModelInputRecoveryRule } from './xai-model-input.js';
 import { listenOnAvailableLoopbackPort } from './test-loopback-server.js';
 import { createThreadStripController } from './thread-strip-controller.js';
-import type { ProxyHandle } from './types.js';
+import type { ProxyHandle, RequestTransform } from './types.js';
 
 const TEST_REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const TEST_PI_BINARY = path.join(
@@ -173,6 +173,70 @@ describe('anthropic-compat-proxy loopback port guard', () => {
     expect(await response.json()).toEqual({ source: 'adapted-provider' });
     expect(response.headers.get('content-length')).toBeNull();
     expect(JSON.parse(requestBody)).toEqual({ model: 'test-model', routed: true });
+  });
+
+  it('settles request-scoped transform state after a non-2xx response', async () => {
+    const upstream = await startFakeUpstream((_idx, _body, res) => {
+      res.writeHead(503, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: { type: 'provider_unavailable' } }));
+    });
+    upstreamClose = upstream.close;
+    const onRequestSettled = vi.fn();
+    const requestTransform: RequestTransform = (body) => body;
+    requestTransform.onRequestSettled = onRequestSettled;
+
+    proxy = await createAnthropicCompatProxy({
+      upstream: upstream.url,
+      transformRequest: [requestTransform],
+    });
+
+    const response = await post(proxy.url, { model: 'test-model' });
+
+    expect(response.status).toBe(503);
+    expect(onRequestSettled).toHaveBeenCalledOnce();
+    expect(onRequestSettled).toHaveBeenCalledWith(1);
+  });
+
+  it('settles request-scoped transform state when the client closes during an async transform', async () => {
+    const upstream = await startFakeUpstream((_idx, _body, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' }).end('{}');
+    });
+    upstreamClose = upstream.close;
+    let resolveTransform!: () => void;
+    let markTransformStarted!: () => void;
+    const transformStarted = new Promise<void>((resolve) => {
+      markTransformStarted = resolve;
+    });
+    const transformReleased = new Promise<void>((resolve) => {
+      resolveTransform = resolve;
+    });
+    const onRequestSettled = vi.fn();
+    const requestTransform: RequestTransform = async (body) => {
+      markTransformStarted();
+      await transformReleased;
+      return body;
+    };
+    requestTransform.onRequestSettled = onRequestSettled;
+    proxy = await createAnthropicCompatProxy({
+      upstream: upstream.url,
+      transformRequest: [requestTransform],
+    });
+
+    const controller = new AbortController();
+    const response = fetch(`${proxy.url}/v1/responses`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{"model":"test-model"}',
+      signal: controller.signal,
+    }).catch(() => null);
+    await transformStarted;
+    controller.abort();
+    await response;
+    expect(onRequestSettled).not.toHaveBeenCalled();
+
+    resolveTransform();
+    await vi.waitFor(() => expect(onRequestSettled).toHaveBeenCalledOnce());
+    expect(onRequestSettled).toHaveBeenCalledWith(1);
   });
 
   it('fails the client when a response transform rejects during async flush', async () => {
