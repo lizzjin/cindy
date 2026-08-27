@@ -113,6 +113,7 @@ import {
   syncPiSubagentPermissions,
   type PiSubagentRunDiagnostic,
   type PiSubagentRunStatus,
+  type ProcessStartTimeMemo,
 } from './pi-subagent-runs.js';
 import {
   annotatePermissionRequestForUnavailableReview,
@@ -591,7 +592,11 @@ function isLocalProcessAlive(pid: number): boolean {
   }
 }
 
-function localConfigHomeOwnerIsActive(owner: LocalConfigHomeOwner, configHome: string): boolean {
+function localConfigHomeOwnerIsActive(
+  owner: LocalConfigHomeOwner,
+  configHome: string,
+  startTimeMemo?: ProcessStartTimeMemo,
+): boolean {
   if (owner.version === 1) {
     return owner.ownerPid === process.pid
       ? activeLocalConfigHomes.has(localConfigHomeKey(configHome))
@@ -600,7 +605,7 @@ function localConfigHomeOwnerIsActive(owner: LocalConfigHomeOwner, configHome: s
   if (!isPiHostProcessInstanceAlive({
     pid: owner.ownerPid,
     startTimeSec: owner.ownerStartTimeSec,
-  })) return false;
+  }, startTimeMemo)) return false;
   return owner.ownerPid !== process.pid
     || activeLocalConfigHomes.has(localConfigHomeKey(configHome));
 }
@@ -656,6 +661,10 @@ async function sweepStaleLocalConfigHomes(
     });
     return;
   }
+  // One owner process may have many active session homes. Reuse only the
+  // expensive start-time sample within this sweep; each check still performs
+  // a fresh signal-0 liveness probe and deletion still re-reads the marker.
+  const ownerStartTimeMemo: ProcessStartTimeMemo = new Map();
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     const candidate = path.resolve(runTmp, entry.name);
@@ -664,7 +673,7 @@ async function sweepStaleLocalConfigHomes(
     // Markerless homes may belong to an older Cindy instance between directory
     // creation and Pi spawn. No process snapshot can prove them reclaimable.
     if (!owner) continue;
-    if (localConfigHomeOwnerIsActive(owner, candidate)) continue;
+    if (localConfigHomeOwnerIsActive(owner, candidate, ownerStartTimeMemo)) continue;
 
     // Re-read immediately before deletion. A directory whose marker changed or
     // whose owner became active is no longer the orphan we proved above.
@@ -673,7 +682,7 @@ async function sweepStaleLocalConfigHomes(
       !currentOwner
       || !sameLocalConfigHomeOwner(currentOwner, owner)
     ) continue;
-    if (localConfigHomeOwnerIsActive(currentOwner, candidate)) continue;
+    if (localConfigHomeOwnerIsActive(currentOwner, candidate, ownerStartTimeMemo)) continue;
 
     const outcome = await removeLocalConfigHomeWithRetry(candidate);
     if (!outcome.removed) {

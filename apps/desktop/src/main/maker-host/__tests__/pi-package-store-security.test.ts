@@ -1488,6 +1488,16 @@ describe('Pi package executable-code boundary', () => {
     });
   });
 
+  it.each(['entries', 'bytes'] as const)(
+    'does not classify an aggregate fingerprint %s limit as a durable package failure',
+    async (reason) => {
+      const store = await import('../pi-package-store.js');
+
+      expect(store.__testing.isDurableSnapshotLimit('aggregate', reason)).toBe(false);
+      expect(store.__testing.isDurableSnapshotLimit('package', reason)).toBe(true);
+    },
+  );
+
   it('omits resources owned by a skipped descendant instead of mapping them through a copied ancestor', async () => {
     const ancestorRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-pi-package-budget-overlap-'));
     roots.push(ancestorRoot);

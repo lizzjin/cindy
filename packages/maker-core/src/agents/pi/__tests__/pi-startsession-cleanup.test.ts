@@ -2370,6 +2370,51 @@ describe('PiAgent.startSession failure cleanup (mocked pi process)', () => {
     }
   });
 
+  it('shares one process-start probe memo across config homes owned by the same process', async () => {
+    const ownerPid = process.ppid;
+    const ownerStartTimeSec = 1;
+    const ownerHomes = ['c'.repeat(32), 'd'.repeat(32)].map((runtimeId) => {
+      const ownerHome = path.join(agentHome, 'run-tmp', runtimeId);
+      mkdirSync(ownerHome, { recursive: true });
+      writeFileSync(
+        path.join(ownerHome, '.cindy-owner.json'),
+        `${JSON.stringify({
+          version: 2,
+          ownerPid,
+          ownerStartTimeSec,
+          createdAt: 1,
+          directoryName: runtimeId,
+          runtimeId,
+          sessionIdHash: 'e'.repeat(64),
+        })}\n`,
+      );
+      return ownerHome;
+    });
+    const probeMemos: unknown[] = [];
+    const ownerProbe = vi
+      .spyOn(piSubagentRuns, 'isPiHostProcessInstanceAlive')
+      .mockImplementation(function () {
+        probeMemos.push(arguments[1]);
+        return true;
+      });
+
+    const handle = await new PiAgent(buildDeps()).startSession({
+      sessionId: 'shared-owner-probe-memo',
+      workingDir: cwd,
+      model: 'm',
+    });
+    try {
+      expect(ownerProbe).toHaveBeenCalledTimes(ownerHomes.length);
+      // pi-subagent-runs separately locks that one shared memo means one
+      // PowerShell/ps start-time probe per owner pid and sweep.
+      expect(probeMemos[0]).toBeInstanceOf(Map);
+      expect(probeMemos[1]).toBe(probeMemos[0]);
+      for (const ownerHome of ownerHomes) expect(existsSync(ownerHome)).toBe(true);
+    } finally {
+      await handle.close();
+    }
+  });
+
   it('preserves markerless legacy homes even when the host process scan finds no live Pi', async () => {
     const legacyHome = path.join(agentHome, 'run-tmp', '0123456789abcdef');
     mkdirSync(legacyHome, { recursive: true });

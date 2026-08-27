@@ -1604,11 +1604,7 @@ async function inspectPackage(
       source: displaySource,
       message: error instanceof Error ? error.message : String(error),
     });
-    const deterministicLimit = error instanceof PiPackageInspectionLimitError
-      ? error.reason !== 'duration'
-      : error instanceof PiPackageSnapshotLimitError
-        ? error.reason !== 'duration'
-        : false;
+    const deterministicLimit = isDurableInspectionFailure(error);
     const snapshotUnavailable = deterministicLimit
       && installedRoot
       && installationIdentity
@@ -2399,6 +2395,24 @@ class PiPackageSnapshotLimitError extends Error {
     this.name = 'PiPackageSnapshotLimitError';
   }
 }
+
+function isDurableInspectionFailure(error: unknown): boolean {
+  return error instanceof PiPackageInspectionLimitError
+    ? error.reason !== 'duration'
+    : error instanceof PiPackageSnapshotLimitError
+      ? error.scope === 'package' && error.reason !== 'duration'
+      : false;
+}
+
+/** Narrow seam for the inspection-limit persistence decision table. */
+export const __testing = {
+  isDurableSnapshotLimit(
+    scope: 'package' | 'aggregate',
+    reason: PiPackageSnapshotLimitReason,
+  ): boolean {
+    return isDurableInspectionFailure(new PiPackageSnapshotLimitError(scope, reason));
+  },
+};
 
 interface SnapshotBudgetCounters {
   startedAt: number;

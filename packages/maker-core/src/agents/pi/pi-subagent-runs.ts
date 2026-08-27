@@ -1229,7 +1229,7 @@ function probeProcessStartTimeSec(pid: number, now: number): number | null {
  * cannot detect reuse; only a fresh probe can, and a sweep-scoped memo is the
  * largest window in which reuse is not observable anyway.
  */
-type ProcessStartTimeMemo = Map<number, number | null>;
+export type ProcessStartTimeMemo = Map<number, number | null>;
 
 function readProcessStartTimeSec(pid: number, memo?: ProcessStartTimeMemo): number | null {
   const cached = memo?.get(pid);
@@ -1270,8 +1270,11 @@ function isOwnerInstanceAlive(
 }
 
 /** Conservative liveness check for a Pi host process incarnation. */
-export function isPiHostProcessInstanceAlive(identity: PiSubagentOwnerIdentity): boolean {
-  return isOwnerInstanceAlive(identity);
+export function isPiHostProcessInstanceAlive(
+  identity: PiSubagentOwnerIdentity,
+  startTimeMemo?: ProcessStartTimeMemo,
+): boolean {
+  return isOwnerInstanceAlive(identity, startTimeMemo);
 }
 
 function isProcessAlive(pid: number | undefined): boolean | null {
