@@ -545,12 +545,24 @@ export interface AgentDeps {
   resolvePiAgentHome?: (remoteHostId?: string | null) => string | undefined;
 
   /**
+   * Pi-only: return true only after a fresh host-process scan proves that no
+   * Cindy-managed Pi process is alive. Local startup uses this narrow proof to
+   * reclaim markerless config homes left by builds that predate owner markers.
+   * Missing, false, or throwing resolvers fail closed and preserve the homes.
+   */
+  canReclaimLegacyPiConfigHomes?: () => Promise<boolean>;
+
+  /**
    * Pi-only: Cindy-owned packages explicitly enabled for a new runtime on this device.
    * The host owns package installation, compatibility inspection, persistence,
    * and path confinement. Device-link remote control still executes on this host
    * and therefore uses these resources. SSH remoteHostId and Review runtimes do not.
    */
-  resolvePiManagedPackageResources?: (options?: { snapshotRoot: string }) => Promise<{
+  resolvePiManagedPackageResources?: (options?: {
+    snapshotRoot: string;
+    /** Redacted per-start correlation id for structured startup timing logs. */
+    startupTraceId?: string;
+  }) => Promise<{
     extensions: string[];
     skills: Array<{ path: string; name: string; description?: string }>;
     promptTemplates: string[];

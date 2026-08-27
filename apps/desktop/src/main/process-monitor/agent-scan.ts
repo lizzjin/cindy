@@ -110,6 +110,27 @@ export function classifyMonitoredAgentCommandLine(
   return null;
 }
 
+/**
+ * Does a fresh snapshot contain any live Pi process owned by this Cindy
+ * installation? Exact binary-path matching covers custom/dev layouts; the
+ * normal classifier covers other concurrent Cindy editions sharing userData.
+ */
+export function hasLiveCindyManagedPiProcess(
+  snapshot: OsProcessSnapshot,
+  binaryPath: string,
+): boolean {
+  const binaryLower = binaryPath.toLowerCase();
+  const binarySlash = binaryLower.replace(/\\/g, '/');
+  const binaryBackslash = binaryLower.replace(/\//g, '\\');
+  return snapshot.rows.some((row) => {
+    if (row.state?.toUpperCase().includes('Z')) return false;
+    return row.cmdLineLower.includes(binaryLower)
+      || row.cmdLineLower.includes(binarySlash)
+      || row.cmdLineLower.includes(binaryBackslash)
+      || classifyMonitoredAgentCommandLine(row.cmdLineLower) === 'pi';
+  });
+}
+
 // ps 行:pid ppid stat %cpu rss lstart command(command 可含空格,贪婪吃尾)。
 // LC_ALL=C 把 lstart 固定为 "Mon Aug  6 12:34:56 2026" 一类格式。
 const POSIX_PS_ROW_RE =
@@ -253,6 +274,27 @@ export function createWindowsProcessScanner(
 }
 
 const scanWindows = createWindowsProcessScanner({ runWorker: runWindowsProcessScanWorker });
+
+/**
+ * Uncached process snapshot for ownership decisions. Unlike the UI sampler's
+ * backoff-aware scanner, this never turns a recent Windows scan failure into
+ * an empty snapshot: callers either receive fresh evidence or an exception.
+ */
+export async function scanOsProcessesFresh(): Promise<OsProcessSnapshot> {
+  const snapshot = process.platform !== 'win32'
+    ? await scanPosix()
+    : await (async (): Promise<OsProcessSnapshot> => {
+        const stdout = await runWindowsProcessScanWorker();
+        const rows = parseWindowsProcessTable(stdout);
+        return { rows, childrenByParent: buildChildrenByParent(rows) };
+      })();
+  // A whole-OS scan always includes at least this Cindy/worker process. Empty
+  // therefore means format drift or incomplete evidence, never "no live Pi".
+  if (snapshot.rows.length === 0) {
+    throw new Error('Fresh OS process ownership scan returned no parseable rows');
+  }
+  return snapshot;
+}
 
 /** 生产扫描入口(sampler / terminate 校验共用)。 */
 export function scanOsProcesses(): Promise<OsProcessSnapshot> {

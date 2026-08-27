@@ -18,6 +18,10 @@ const captured = vi.hoisted(() => ({
     refreshTimeoutOnEvent?: (event: { type: string }) => boolean;
   } | undefined>,
   closes: 0,
+  onExit: undefined as undefined | ((info: {
+    code: number | null;
+    signal: NodeJS.Signals | null;
+  }) => void),
   requestHandler: undefined as undefined | ((command: Record<string, unknown>) => Promise<{
     success: boolean;
     command?: unknown;
@@ -64,6 +68,14 @@ vi.mock('../rpc-client.js', () => {
     PiRpcRequestTimeoutError,
     PiRpcProcess: class {
       isClosed = false;
+      constructor(opts: {
+        onExit: (info: {
+          code: number | null;
+          signal: NodeJS.Signals | null;
+        }) => void;
+      }) {
+        captured.onExit = opts.onExit;
+      }
       async request(
         command: Record<string, unknown>,
         options?: {
@@ -129,6 +141,7 @@ describe('Pi provider-aware model routing', () => {
     captured.requests = [];
     captured.requestOptions = [];
     captured.closes = 0;
+    captured.onExit = undefined;
     captured.requestHandler = undefined;
     agentHome = mkdtempSync(path.join(tmpdir(), 'pi-provider-home-'));
     cwd = mkdtempSync(path.join(tmpdir(), 'pi-provider-cwd-'));
@@ -3703,6 +3716,66 @@ describe('Pi provider-aware model routing', () => {
       'set_model',
     ]);
     await handle.close();
+  });
+
+  it('preserves the stable remote config home across a transport disconnect and reattach', async () => {
+    const remoteStub: import('../transport.js').PiTransport = {
+      writeLine: async () => {},
+      onLine: () => () => {},
+      onStderr: () => () => {},
+      onClose: () => () => {},
+      close: async () => {},
+      pid: 4321,
+      isClosed: () => false,
+      remoteBinaryPath: '/remote/pi',
+      killRemoteSession: async () => {},
+    };
+    const remoteRm = vi.fn(async () => {});
+    const capturedRemoteEnvs: Array<Record<string, string | undefined>> = [];
+    const base = byomDeps(async () => ({ providers: [], env: {} }));
+    const deps: AgentDeps = {
+      ...base,
+      runtimeConfig: {
+        ...base.runtimeConfig,
+        remoteEndpoint: 'https://gateway.example.test',
+      },
+      resolveRemotePiBinaryPath: async () => '/remote/pi',
+      getRemotePiTransport: async (_hostId, opts) => {
+        capturedRemoteEnvs.push({ ...(opts.env ?? {}) });
+        return remoteStub;
+      },
+      getRemotePiFileOps: () => ({
+        mkdirp: async () => {},
+        writeFile: async () => {},
+        stat: async () => ({ isFile: true }),
+        rm: remoteRm,
+        listDir: async () => [],
+      }),
+    };
+
+    await new PiAgent(deps).startSession({
+      sessionId: 'remote-disconnect-reattach',
+      workingDir: cwd,
+      model: 'local-model',
+      remoteHostId: 'remote-host',
+    });
+    const firstEnv = capturedRemoteEnvs[0]!;
+    const configHome = firstEnv.PI_CODING_AGENT_DIR!;
+
+    captured.onExit?.({ code: null, signal: null });
+    await Promise.resolve();
+    expect(remoteRm).not.toHaveBeenCalledWith(configHome, { recursive: true });
+
+    const reattached = await new PiAgent(deps).startSession({
+      sessionId: 'remote-disconnect-reattach',
+      workingDir: cwd,
+      model: 'local-model',
+      remoteHostId: 'remote-host',
+    });
+    expect(capturedRemoteEnvs[1]).toEqual(firstEnv);
+    expect(capturedRemoteEnvs[1]?.PI_CODING_AGENT_DIR).toBe(configHome);
+    await reattached.close();
+    expect(remoteRm).not.toHaveBeenCalledWith(configHome, { recursive: true });
   });
 
   it('hashes the remote permission snapshot into spawn env so a later Full-access attach restarts', async () => {

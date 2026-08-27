@@ -10,6 +10,7 @@ import {
   classifyMonitoredAgentCommandLine,
   collectDescendantPids,
   createWindowsProcessScanner,
+  hasLiveCindyManagedPiProcess,
   parsePosixProcessTable,
   parseWindowsProcessTable,
   registerPiUserDataMarkers,
@@ -133,6 +134,35 @@ describe('classifyMonitoredAgentCommandLine', () => {
     // 空路径显式清空，不能退化成会命中所有 `/pi/` 路径的宽泛 marker。
     registerPiUserDataMarkers('');
     expect(classifyMonitoredAgentCommandLine('/opt/pi/2.0/pi --rpc')).toBeNull();
+  });
+});
+
+describe('hasLiveCindyManagedPiProcess', () => {
+  const snapshot = (rows: Array<{ state: string | null; cmdLineLower: string }>) => ({
+    rows: rows.map((row, index) => ({
+      pid: index + 1,
+      ppid: 0,
+      memoryKb: 0,
+      cpuPercent: null,
+      cpuTimeMs: null,
+      startIdentity: null,
+      ...row,
+    })),
+    childrenByParent: new Map<number, number[]>(),
+  });
+
+  it('recognizes an exact custom binary path across separator styles', () => {
+    expect(hasLiveCindyManagedPiProcess(
+      snapshot([{ state: null, cmdLineLower: '"d:/custom pi/bin/pi.exe" --mode rpc' }]),
+      'D:\\custom pi\\bin\\pi.exe',
+    )).toBe(true);
+  });
+
+  it('ignores zombies and unrelated external pi commands', () => {
+    expect(hasLiveCindyManagedPiProcess(snapshot([
+      { state: 'Z+', cmdLineLower: '/repo/apps/pi-bin/linux-x64/pi --mode rpc' },
+      { state: 'S', cmdLineLower: '/usr/local/bin/pi serve' },
+    ]), '/different/custom/pi')).toBe(false);
   });
 });
 

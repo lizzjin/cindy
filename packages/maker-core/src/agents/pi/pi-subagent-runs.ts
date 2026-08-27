@@ -1025,6 +1025,11 @@ function ownProcessStartTimeSec(): number {
   return Math.round(Date.now() / 1000 - process.uptime());
 }
 
+/** Process-incarnation stamp shared by other host-owned Pi runtime records. */
+export function piHostProcessStartTimeSec(): number {
+  return ownProcessStartTimeSec();
+}
+
 export interface PiSubagentOwnerIdentity {
   pid: number;
   /** Absent on ids written before the start time was recorded. */
@@ -1260,6 +1265,11 @@ function isOwnerInstanceAlive(
     : readProcessStartTimeSec(identity.pid, memo);
   if (startTimeSec === null) return true;
   return Math.abs(startTimeSec - identity.startTimeSec) <= OWNER_START_TIME_TOLERANCE_SEC;
+}
+
+/** Conservative liveness check for a Pi host process incarnation. */
+export function isPiHostProcessInstanceAlive(identity: PiSubagentOwnerIdentity): boolean {
+  return isOwnerInstanceAlive(identity);
 }
 
 function isProcessAlive(pid: number | undefined): boolean | null {

@@ -65,6 +65,10 @@ import {
 } from '../../shared/localModelRuntime.js';
 import { ensureManagedOllamaReadyForSession } from '../local-model-runtime/preflight.js';
 import {
+  hasLiveCindyManagedPiProcess,
+  scanOsProcessesFresh,
+} from '../process-monitor/agent-scan.js';
+import {
   applyQwen38NativeOverlay,
   shouldApplyQwen38Overlay,
 } from '../local-model-runtime/qwenProfile.js';
@@ -1647,6 +1651,10 @@ export function buildPiAgent(opts: BuildPiAgentOpts): PiAgent | null {
       // 一致。run-tmp 等短生命周期内容仍走 agentHome/run-tmp。
       if (remoteHostId) return '$HOME/.xdt-server/v1/pi-agent-home';
       return path.join(app.getPath('userData'), 'pi-agent-home');
+    },
+    canReclaimLegacyPiConfigHomes: async () => {
+      const snapshot = await scanOsProcessesFresh();
+      return !hasLiveCindyManagedPiProcess(snapshot, binaryPath);
     },
     resolvePiManagedPackageResources: resolveManagedPiPackageResources,
     mutatePiManagedPackage: mutateAuthorizedPiManagedPackage,
