@@ -2370,32 +2370,26 @@ describe('PiAgent.startSession failure cleanup (mocked pi process)', () => {
     }
   });
 
-  it('reclaims markerless legacy homes only after the host proves no managed Pi process is live', async () => {
+  it('preserves markerless legacy homes even when the host process scan finds no live Pi', async () => {
     const legacyHome = path.join(agentHome, 'run-tmp', '0123456789abcdef');
     mkdirSync(legacyHome, { recursive: true });
     writeFileSync(path.join(legacyHome, 'models.json'), '{}\n');
 
-    const preservingHandle = await new PiAgent(buildDeps({
-      canReclaimLegacyPiConfigHomes: async () => false,
-    })).startSession({
-      sessionId: 'legacy-preserve',
-      workingDir: cwd,
-      model: 'm',
-    });
-    await preservingHandle.close();
-    expect(existsSync(legacyHome)).toBe(true);
-
-    const reclaimingHandle = await new PiAgent(buildDeps({
+    // Simulate the removed host hint so a future sweep cannot accidentally
+    // reinstate markerless deletion based only on post-spawn process evidence.
+    const deps = {
+      ...buildDeps(),
       canReclaimLegacyPiConfigHomes: async () => true,
-    })).startSession({
-      sessionId: 'legacy-reclaim',
+    };
+    const handle = await new PiAgent(deps).startSession({
+      sessionId: 'legacy-preserve-pre-spawn',
       workingDir: cwd,
       model: 'm',
     });
     try {
-      expect(existsSync(legacyHome)).toBe(false);
+      expect(existsSync(legacyHome)).toBe(true);
     } finally {
-      await reclaimingHandle.close();
+      await handle.close();
     }
   });
 

@@ -454,7 +454,6 @@ async function stageManagedRipgrep(configHome: string, sourcePath: string | unde
 const LOCAL_CONFIG_HOME_OWNER_FILE = '.cindy-owner.json';
 const LOCAL_CONFIG_HOME_OWNER_VERSION = 2;
 const LOCAL_CONFIG_HOME_REMOVE_RETRY_DELAYS_MS = [0, 25, 100] as const;
-const LEGACY_LOCAL_CONFIG_HOME_NAME_RE = /^[a-f0-9]{16}$/;
 const LOCAL_CONFIG_HOME_RUNTIME_ID_RE = /^[a-f0-9]{32}$/;
 const SHA256_HEX_RE = /^[a-f0-9]{64}$/;
 const activeLocalConfigHomes = new Set<string>();
@@ -645,7 +644,6 @@ async function removeLocalConfigHomeWithRetry(
 async function sweepStaleLocalConfigHomes(
   agentHome: string,
   logger: ConfigHomeCleanupLogger,
-  canReclaimLegacyHomes: (() => Promise<boolean>) | undefined,
 ): Promise<void> {
   const runTmp = path.resolve(agentHome, 'run-tmp');
   let entries;
@@ -658,38 +656,14 @@ async function sweepStaleLocalConfigHomes(
     });
     return;
   }
-  let legacyReclaimDecision: Promise<boolean> | undefined;
-  const canReclaimLegacy = (): Promise<boolean> => {
-    legacyReclaimDecision ??= canReclaimLegacyHomes
-      ? canReclaimLegacyHomes().catch((error) => {
-          logger.debug('pi legacy configHome ownership scan failed (preserved)', {
-            message: error instanceof Error ? error.message : String(error),
-          });
-          return false;
-        })
-      : Promise.resolve(false);
-    return legacyReclaimDecision;
-  };
-
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     const candidate = path.resolve(runTmp, entry.name);
     if (path.dirname(candidate) !== runTmp) continue;
     const owner = await readLocalConfigHomeOwner(candidate);
-    if (!owner) {
-      if (!LEGACY_LOCAL_CONFIG_HOME_NAME_RE.test(entry.name) || !await canReclaimLegacy()) continue;
-      // A marker may have appeared while the host process scan was in flight.
-      // Markerless legacy homes are deleted only while they remain markerless.
-      if (await readLocalConfigHomeOwner(candidate)) continue;
-      const outcome = await removeLocalConfigHomeWithRetry(candidate);
-      if (!outcome.removed) {
-        logger.debug('pi legacy configHome cleanup failed (retried next startSession)', {
-          configHomeId: entry.name,
-          message: outcome.error instanceof Error ? outcome.error.message : String(outcome.error),
-        });
-      }
-      continue;
-    }
+    // Markerless homes may belong to an older Cindy instance between directory
+    // creation and Pi spawn. No process snapshot can prove them reclaimable.
+    if (!owner) continue;
     if (localConfigHomeOwnerIsActive(owner, candidate)) continue;
 
     // Re-read immediately before deletion. A directory whose marker changed or
@@ -2306,7 +2280,6 @@ export class PiAgent extends BaseAgent {
       await sweepStaleLocalConfigHomes(
         agentHome,
         this.deps.logger,
-        this.deps.canReclaimLegacyPiConfigHomes,
       );
     }
     const allowPiPackageManagement = !reviewMode && !remote && Boolean(this.deps.mutatePiManagedPackage);
