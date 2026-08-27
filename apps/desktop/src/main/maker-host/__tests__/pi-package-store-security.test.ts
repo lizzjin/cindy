@@ -1578,36 +1578,50 @@ describe('Pi package executable-code boundary', () => {
         { enabled: false, warning: 'inspection-limit' },
       ],
     });
-    const state = JSON.parse(await fs.readFile(
+    const stateFile = await fs.readFile(
       path.join(runtime.userData, 'pi-package-home', 'cindy-package-state.json'),
       'utf8',
-    )) as {
-      disabledSources: string[];
-      snapshotUnavailablePackages: Array<{
-        source: string;
-        installedRoot: string;
-        installationIdentity: string;
-        snapshotRoot: string;
-        warning: string;
-      }>;
-    };
-    expect(state.disabledSources).toEqual([]);
-    expect(state.snapshotUnavailablePackages).toEqual([
-      expect.objectContaining({
-        source: sources[1],
-        installedRoot: await fs.realpath(packageRoots[1]!),
-        installationIdentity: expect.stringMatching(/^[a-f0-9]{64}$/),
-        snapshotRoot: await fs.realpath(packageRoots[1]!),
-        warning: 'inspection-limit',
-      }),
-      expect.objectContaining({
-        source: sources[2],
-        installedRoot: await fs.realpath(packageRoots[2]!),
-        installationIdentity: expect.stringMatching(/^[a-f0-9]{64}$/),
-        snapshotRoot: await fs.realpath(packageRoots[2]!),
-        warning: 'inspection-limit',
-      }),
-    ]);
+    ).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return null;
+      throw error;
+    });
+    if (stateFile) {
+      const state = JSON.parse(stateFile) as {
+        disabledSources: string[];
+        snapshotUnavailablePackages: unknown[];
+      };
+      expect(state.disabledSources).toEqual([]);
+      expect(state.snapshotUnavailablePackages).toEqual([]);
+    }
+
+    vi.resetModules();
+    const nextStore = await import('../pi-package-store.js');
+    const recoveredRoot = path.join(runtime.userData, 'aggregate-package-recovered');
+    await expect(nextStore.resolveManagedPiPackageResources({
+      snapshotRoot: recoveredRoot,
+      snapshotLimits: {
+        maxEntries: 100,
+        maxBytes: 1024 * 1024,
+        maxDurationMs: 10_000,
+      },
+    })).resolves.toMatchObject({
+      skills: [
+        expect.objectContaining({
+          path: path.join(recoveredRoot, '0', 'skills', 'skill-0', 'SKILL.md'),
+        }),
+        expect.objectContaining({
+          path: path.join(recoveredRoot, '1', 'skills', 'skill-1', 'SKILL.md'),
+        }),
+        expect.objectContaining({
+          path: path.join(recoveredRoot, '2', 'skills', 'skill-2', 'SKILL.md'),
+        }),
+      ],
+      packageRoots: [
+        path.join(recoveredRoot, '0'),
+        path.join(recoveredRoot, '1'),
+        path.join(recoveredRoot, '2'),
+      ],
+    });
   });
 
   it('reuses a persisted inspection-limit without walking the package tree for every session', async () => {
@@ -1699,6 +1713,46 @@ describe('Pi package executable-code boundary', () => {
     });
   });
 
+  it('retries a legacy v4 inspection-limit without retry metadata once', async () => {
+    const { source } = await createSkillOnlyPackage('npm:legacy-v4-snapshot-limit');
+    const store = await import('../pi-package-store.js');
+    await expect(store.resolveManagedPiPackageResources({
+      snapshotRoot: path.join(runtime.userData, 'legacy-v4-limited-snapshot'),
+      snapshotLimits: {
+        maxEntries: 1,
+        maxBytes: 1024 * 1024,
+        maxDurationMs: 10_000,
+      },
+    })).resolves.toMatchObject({ packageRoots: [] });
+
+    const statePath = path.join(
+      runtime.userData,
+      'pi-package-home',
+      'cindy-package-state.json',
+    );
+    const state = JSON.parse(await fs.readFile(statePath, 'utf8')) as {
+      snapshotUnavailablePackages: Array<{ retryAfterEpochMs?: number }>;
+    };
+    expect(state.snapshotUnavailablePackages).toHaveLength(1);
+    delete state.snapshotUnavailablePackages[0]!.retryAfterEpochMs;
+    await fs.writeFile(statePath, JSON.stringify(state));
+
+    vi.resetModules();
+    const nextStore = await import('../pi-package-store.js');
+    const recoveredRoot = path.join(runtime.userData, 'legacy-v4-recovered-snapshot');
+    await expect(nextStore.resolveManagedPiPackageResources({
+      snapshotRoot: recoveredRoot,
+    })).resolves.toMatchObject({
+      skills: [expect.objectContaining({
+        path: path.join(recoveredRoot, '0', 'skills', 'managed-skill', 'SKILL.md'),
+      })],
+      packageRoots: [path.join(recoveredRoot, '0')],
+    });
+    await expect(nextStore.listPiPackages()).resolves.toMatchObject({
+      packages: [expect.objectContaining({ source, enabled: true })],
+    });
+  });
+
   it('persists a deterministic inspection-stage limit before the next session walks metadata', async () => {
     const { root, source } = await createPackage({ oversizedManifest: true });
     const store = await import('../pi-package-store.js');
@@ -1725,6 +1779,7 @@ describe('Pi package executable-code boundary', () => {
 
     vi.resetModules();
     const manifestPath = path.join(root, 'package.json');
+    const canonicalManifestPath = path.resolve(await fs.realpath(manifestPath));
     const openSpy = vi.spyOn(fs, 'open');
     const opendirSpy = vi.spyOn(fs, 'opendir');
     try {
@@ -1735,9 +1790,10 @@ describe('Pi package executable-code boundary', () => {
       // The durable negative identity includes one bounded package.json digest
       // so in-place upgrades invalidate it. Reuse must still avoid walking,
       // fingerprinting, or copying the package tree.
-      expect(openSpy.mock.calls.filter(([candidate]) => (
-        path.resolve(String(candidate)) === path.resolve(manifestPath)
-      ))).toHaveLength(1);
+      const openedPaths = await Promise.all(openSpy.mock.calls.map(async ([candidate]) => (
+        path.resolve(await fs.realpath(String(candidate)))
+      )));
+      expect(openedPaths.filter((candidate) => candidate === canonicalManifestPath)).toHaveLength(1);
       expect(opendirSpy).not.toHaveBeenCalled();
     } finally {
       openSpy.mockRestore();
@@ -1801,14 +1857,16 @@ describe('Pi package executable-code boundary', () => {
     const { root, source } = await createSkillOnlyPackage('npm:inspection-duration-retry');
     const store = await import('../pi-package-store.js');
     const originalReaddir = fs.readdir.bind(fs);
+    const canonicalSkillsRoot = path.resolve(await fs.realpath(path.join(root, 'skills')));
     let now = Date.now();
     let delayedInspection = false;
     const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now);
     const readdirSpy = vi.spyOn(fs, 'readdir').mockImplementation(async (...args) => {
       const result = await originalReaddir(...args as Parameters<typeof fs.readdir>);
+      const canonicalCandidate = path.resolve(await fs.realpath(String(args[0])));
       if (
         !delayedInspection
-        && path.resolve(String(args[0])) === path.resolve(root, 'skills')
+        && canonicalCandidate === canonicalSkillsRoot
       ) {
         delayedInspection = true;
         now += 2_001;
@@ -1902,59 +1960,67 @@ describe('Pi package executable-code boundary', () => {
     });
   });
 
-  it('does not reuse a persisted inspection-limit after package content changes under a stable root identity', async () => {
+  it('retries a persisted inspection-limit after deep package content shrinks under a stable root identity', async () => {
     const { root, source } = await createSkillOnlyPackage('npm:mutated-installation');
-    const store = await import('../pi-package-store.js');
-    await expect(
-      store.resolveManagedPiPackageResources({
-        snapshotRoot: path.join(runtime.userData, 'mutated-installation-limited-snapshot'),
-        snapshotLimits: {
-          maxEntries: 1,
-          maxBytes: 1024 * 1024,
-          maxDurationMs: 10_000,
-        },
-      }),
-    ).resolves.toMatchObject({ packageRoots: [] });
-
-    const canonicalRoot = await fs.realpath(root);
-    const stableRootStat = await fs.stat(canonicalRoot);
-    await fs.writeFile(
-      path.join(root, 'package.json'),
-      JSON.stringify({
-        name: source.slice(4),
-        version: '2.0.0',
-        pi: { skills: ['./skills'] },
-      }),
-    );
-    await fs.writeFile(
-      path.join(root, 'skills', 'managed-skill', 'SKILL.md'),
-      '# Mutated installation\n',
-    );
-
-    // Root directory metadata is not a content identity. Pin it to the value
-    // captured for the failed installation so this regression stays
-    // deterministic on filesystems that happen to touch directory timestamps.
+    const deepPayload = path.join(root, 'skills', 'managed-skill', 'payload.bin');
+    await fs.writeFile(deepPayload, Buffer.alloc(4_096));
+    let now = Date.now();
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now);
     const originalLstat = fs.lstat.bind(fs);
     const originalStat = fs.stat.bind(fs);
-    const lstatSpy = vi.spyOn(fs, 'lstat').mockImplementation(async (target, options) => (
-      path.resolve(String(target)) === canonicalRoot
-        ? stableRootStat
-        : originalLstat(target, options as never)
-    ));
-    const statSpy = vi.spyOn(fs, 'stat').mockImplementation(async (target, options) => (
-      path.resolve(String(target)) === canonicalRoot
-        ? stableRootStat
-        : originalStat(target, options as never)
-    ));
+    let lstatSpy: { mockRestore(): void } | undefined;
+    let statSpy: { mockRestore(): void } | undefined;
     try {
+      const store = await import('../pi-package-store.js');
+      await expect(
+        store.resolveManagedPiPackageResources({
+          snapshotRoot: path.join(runtime.userData, 'mutated-installation-limited-snapshot'),
+          snapshotLimits: {
+            maxEntries: 100,
+            maxBytes: 1_024,
+            maxDurationMs: 10_000,
+          },
+        }),
+      ).resolves.toMatchObject({ packageRoots: [] });
+
+      const canonicalRoot = await fs.realpath(root);
+      const stableRootStat = await fs.stat(canonicalRoot);
+      await fs.writeFile(deepPayload, Buffer.from('.'));
+      now += 24 * 60 * 60 * 1_000;
+
+      // Root directory metadata is not a content identity. Pin it to the value
+      // captured for the failed installation so this regression stays
+      // deterministic on filesystems that happen to touch directory timestamps.
+      lstatSpy = vi.spyOn(fs, 'lstat').mockImplementation(async (target, options) => (
+        path.resolve(String(target)) === canonicalRoot
+          ? stableRootStat
+          : originalLstat(target, options as never)
+      ));
+      statSpy = vi.spyOn(fs, 'stat').mockImplementation(async (target, options) => (
+        path.resolve(String(target)) === canonicalRoot
+          ? stableRootStat
+          : originalStat(target, options as never)
+      ));
       vi.resetModules();
       const replacementStore = await import('../pi-package-store.js');
-      await expect(replacementStore.listPiPackages()).resolves.toMatchObject({
-        packages: [expect.objectContaining({ source, version: '2.0.0', enabled: true })],
+      const recoveredRoot = path.join(runtime.userData, 'mutated-installation-recovered-snapshot');
+      await expect(replacementStore.resolveManagedPiPackageResources({
+        snapshotRoot: recoveredRoot,
+        snapshotLimits: {
+          maxEntries: 100,
+          maxBytes: 1_024,
+          maxDurationMs: 10_000,
+        },
+      })).resolves.toMatchObject({
+        skills: [expect.objectContaining({
+          path: path.join(recoveredRoot, '0', 'skills', 'managed-skill', 'SKILL.md'),
+        })],
+        packageRoots: [path.join(recoveredRoot, '0')],
       });
     } finally {
-      lstatSpy.mockRestore();
-      statSpy.mockRestore();
+      lstatSpy?.mockRestore();
+      statSpy?.mockRestore();
+      nowSpy.mockRestore();
     }
   });
 
