@@ -180,6 +180,10 @@ import {
   createPiTranslateContext,
   disposePiTranslateContext,
   isFailedOrAbortedPiCompaction,
+  markPiHostAbortRequested,
+  markPiHostTurnStartPending,
+  rollbackPiHostAbortRequest,
+  rollbackPiHostTurnStart,
   translatePiEvent,
   usageSnapshotOf,
   type PiTranslateContext,
@@ -5483,6 +5487,7 @@ export class PiAgent extends BaseAgent {
             ? await readPiUserEntryIds()
             : null;
           if (!managedPackageRoute.accepted) rejectIfCancelled(sendOpts, 'send');
+          const pendingTurnStartToken = markPiHostTurnStartPending(ctx);
           promptRequestStarted = true;
           const firstModelRequestStartedAt = firstModelRequestLogged ? undefined : Date.now();
           if (firstModelRequestStartedAt !== undefined) firstModelRequestLogged = true;
@@ -5499,6 +5504,7 @@ export class PiAgent extends BaseAgent {
             }));
             firstModelRequestStatus = resp.success ? 'ok' : 'degraded';
             if (!resp.success) {
+              rollbackPiHostTurnStart(ctx, pendingTurnStartToken);
               if (managedPackageRoute.accepted) {
                 // The host-owned package mutation and its deterministic visible
                 // receipt already crossed the dispatch boundary. The follow-up
@@ -5568,6 +5574,7 @@ export class PiAgent extends BaseAgent {
                   data.isCompacting !== true &&
                   (typeof data.pendingMessageCount !== 'number' || data.pendingMessageCount === 0);
                 if (runtimeIdle && piAgentLifecycleSequence === lifecycleSequenceBeforePrompt) {
+                  rollbackPiHostTurnStart(ctx, pendingTurnStartToken);
                   const result = capturedExtensionNotifications?.join('\n\n') ?? '';
                   // prompt success is only the RPC acceptance boundary. Let
                   // handle.send() resolve before publishing a synthetic terminal;
@@ -5775,9 +5782,17 @@ export class PiAgent extends BaseAgent {
 
       async requestGracefulStop(): Promise<void> {
         if (proc.isClosed) throw new Error('No active Pi turn to stop');
+        const hostAbortToken = markPiHostAbortRequested(ctx);
         dismissAllPendingPrompts('turn_aborted', 'deny');
-        const resp = await proc.request({ type: 'abort' });
+        let resp: Awaited<ReturnType<typeof proc.request>>;
+        try {
+          resp = await proc.request({ type: 'abort' });
+        } catch (error) {
+          rollbackPiHostAbortRequest(ctx, hostAbortToken);
+          throw error;
+        }
         if (!resp.success) {
+          rollbackPiHostAbortRequest(ctx, hostAbortToken);
           throw new Error(`Pi graceful stop rejected: ${resp.error ?? 'unknown'}`);
         }
         clearActiveTurnPermissionPolicy('turn_aborted');
@@ -5785,6 +5800,7 @@ export class PiAgent extends BaseAgent {
 
       async abort(): Promise<void> {
         if (proc.isClosed) return;
+        const hostAbortToken = markPiHostAbortRequested(ctx);
         // 先把等待中的调用 fail-closed 唤醒；即使 abort RPC 失败，也不能让用户刚拒绝/
         // 停止的那次工具继续等一张已失效的卡。policy 仅在 Pi 确认接受 abort 后清空，
         // RPC 失败时继续保留，防止仍在运行的 turn 失去渠道安全边界。
@@ -5794,11 +5810,13 @@ export class PiAgent extends BaseAgent {
           if (resp.success) {
             clearActiveTurnPermissionPolicy('turn_aborted');
           } else {
+            rollbackPiHostAbortRequest(ctx, hostAbortToken);
             deps.logger.warn('pi abort request rejected', {
               message: resp.error ?? 'unknown',
             });
           }
         } catch (err) {
+          rollbackPiHostAbortRequest(ctx, hostAbortToken);
           deps.logger.warn('pi abort request failed', {
             message: err instanceof Error ? err.message : String(err),
           });
