@@ -9054,8 +9054,15 @@ export class CodexAgent extends BaseAgent {
         }
       }
       clearActiveToolContextsForTurn(turn.id);
-      const overlapsActiveTurn = suppressTerminalUi && currentTurnId !== null && currentTurnId !== turn.id;
-      if (overlapsActiveTurn) return;
+      const overlapsActiveTurn = currentTurnId !== null && currentTurnId !== turn.id;
+      if (overlapsActiveTurn) {
+        // A late terminal from an older root turn may overlap a newer active
+        // turn. Keep its tombstone/bookkeeping above, but never settle the
+        // newer turn's usage, generation, retry episode, or product boundary.
+        latestPlanByTurn.delete(turn.id);
+        flushDeferredTerminalTurnCompletionsIfIdle();
+        return;
+      }
       const activeYieldClaim = activeYieldContinuationClaim();
       if (activeYieldClaim && !claimOwnsTurn(activeYieldClaim, turn.id)) {
         // Foreign terminals must not settle the live continuation's usage,
