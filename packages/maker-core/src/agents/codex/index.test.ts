@@ -21234,6 +21234,71 @@ describe('CodexAgent turn lifecycle', () => {
     },
   );
 
+  it('starts a fresh retry episode after same-turn progress (issue #3578)', async () => {
+    const agent = new CodexAgent(createDeps());
+    const host = installFakeHost(agent);
+    const handle = await agent.startSession({
+      sessionId: 'session-retry-episode-recovery',
+      model: 'gpt-5.4',
+      workingDir: '/repo',
+    });
+    const handlers = host.getThreadHandlers();
+    if (!handlers?.error || !handlers.reasoningTextDelta) {
+      throw new Error('expected retry and reasoning handlers');
+    }
+    const events: AgentEvent[] = [];
+    void (async () => {
+      for await (const event of handle.events()) events.push(event);
+    })();
+
+    handlers.turnStarted?.({
+      threadId: 'start-thread-id',
+      turn: { id: 'turn-retry-episode-recovery' },
+    } as never);
+    handlers.error({
+      threadId: 'start-thread-id',
+      turnId: 'turn-retry-episode-recovery',
+      willRetry: true,
+      error: { message: 'Reconnecting... 1/5' },
+    } as never);
+    handlers.reasoningTextDelta({
+      threadId: 'start-thread-id',
+      turnId: 'turn-retry-episode-recovery',
+      itemId: 'reasoning-recovered',
+      contentIndex: 0,
+      delta: 'recovered',
+    } as never);
+    await waitForExpectation(() => {
+      expect(events).toContainEqual(expect.objectContaining({
+        type: 'thinking',
+        data: expect.objectContaining({ text: 'recovered' }),
+      }));
+    });
+
+    const retryError = {
+      threadId: 'start-thread-id',
+      turnId: 'turn-retry-episode-recovery',
+      willRetry: true,
+      error: {
+        message: 'unexpected status 403 Forbidden, url: https://chatgpt.com/backend-api/codex/responses',
+      },
+    } as const;
+    for (let index = 0; index < 29; index += 1) {
+      handlers.error(retryError);
+    }
+
+    expect(handle.isTurnRunning?.()).toBe(true);
+    expect(events).not.toContainEqual(expect.objectContaining({
+      type: 'error',
+      data: expect.objectContaining({
+        isTerminal: true,
+        message: expect.stringContaining('Codex backend unreachable'),
+      }),
+    }));
+    expect(host.request).not.toHaveBeenCalledWith(Method.TurnInterrupt, expect.anything());
+    await handle.close();
+  });
+
   it('escalates a persistent willRetry retry-loop to a terminal error (issue #677)', async () => {
     // 远端摸不到 Codex 后端时 daemon 无限发 willRetry=true — 升级逻辑应在阈值处
     // 合成终态错误并复位 turn (isTurnRunning=false + Done status), 消息里带原始

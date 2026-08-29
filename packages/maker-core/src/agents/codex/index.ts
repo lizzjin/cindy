@@ -6980,6 +6980,9 @@ export class CodexAgent extends BaseAgent {
       }
       if (isReconnectRecoveryEvent(event)) {
         clearReconnectStall();
+        // Descendant/background events are filtered by the queue probe. Real
+        // root-turn progress starts a new retry episode within the same turn.
+        turnRetryTracker.reset();
       }
     }
     /**
