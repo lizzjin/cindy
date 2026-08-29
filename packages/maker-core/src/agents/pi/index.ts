@@ -100,7 +100,7 @@ import {
   listPiSubagentRunDiagnostics,
   listPiSubagentRunDirectoryIds,
   listPiSubagentRuns,
-  isPiHostProcessInstanceAlive,
+  isPiHostProcessInstanceAliveAsync,
   piHostProcessStartTimeSec,
   piSubagentRunRoot,
   piSubagentApprovalScope,
@@ -465,9 +465,14 @@ async function stageManagedRipgrep(configHome: string, sourcePath: string | unde
 const LOCAL_CONFIG_HOME_OWNER_FILE = '.cindy-owner.json';
 const LOCAL_CONFIG_HOME_OWNER_VERSION = 2;
 const LOCAL_CONFIG_HOME_REMOVE_RETRY_DELAYS_MS = [0, 25, 100] as const;
+/** One background turn may inspect only this many directory entries. */
+const LOCAL_CONFIG_HOME_SWEEP_ENTRY_BUDGET = 8;
+/** Stop a round after the current async operation once this soft budget expires. */
+const LOCAL_CONFIG_HOME_SWEEP_TIME_BUDGET_MS = 250;
 const LOCAL_CONFIG_HOME_RUNTIME_ID_RE = /^[a-f0-9]{32}$/;
 const SHA256_HEX_RE = /^[a-f0-9]{64}$/;
 const activeLocalConfigHomes = new Set<string>();
+const activeLocalConfigHomeSweeps = new Set<string>();
 
 /** Durable proof used only to decide whether a local per-session config home is reclaimable. */
 interface LocalConfigHomeOwnerV1 {
@@ -602,17 +607,17 @@ function isLocalProcessAlive(pid: number): boolean {
   }
 }
 
-function localConfigHomeOwnerIsActive(
+async function localConfigHomeOwnerIsActive(
   owner: LocalConfigHomeOwner,
   configHome: string,
   startTimeMemo?: ProcessStartTimeMemo,
-): boolean {
+): Promise<boolean> {
   if (owner.version === 1) {
     return owner.ownerPid === process.pid
       ? activeLocalConfigHomes.has(localConfigHomeKey(configHome))
       : isLocalProcessAlive(owner.ownerPid);
   }
-  if (!isPiHostProcessInstanceAlive({
+  if (!await isPiHostProcessInstanceAliveAsync({
     pid: owner.ownerPid,
     startTimeSec: owner.ownerStartTimeSec,
   }, startTimeMemo)) return false;
@@ -671,37 +676,77 @@ async function sweepStaleLocalConfigHomes(
     });
     return;
   }
-  // One owner process may have many active session homes. Reuse only the
-  // expensive start-time sample within this sweep; each check still performs
-  // a fresh signal-0 liveness probe and deletion still re-reads the marker.
-  const ownerStartTimeMemo: ProcessStartTimeMemo = new Map();
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
-    const candidate = path.resolve(runTmp, entry.name);
-    if (path.dirname(candidate) !== runTmp) continue;
-    const owner = await readLocalConfigHomeOwner(candidate);
-    // Markerless homes may belong to an older Cindy instance between directory
-    // creation and Pi spawn. No process snapshot can prove them reclaimable.
-    if (!owner) continue;
-    if (localConfigHomeOwnerIsActive(owner, candidate, ownerStartTimeMemo)) continue;
-
-    // Re-read immediately before deletion. A directory whose marker changed or
-    // whose owner became active is no longer the orphan we proved above.
-    const currentOwner = await readLocalConfigHomeOwner(candidate);
-    if (
-      !currentOwner
-      || !sameLocalConfigHomeOwner(currentOwner, owner)
-    ) continue;
-    if (localConfigHomeOwnerIsActive(currentOwner, candidate, ownerStartTimeMemo)) continue;
-
-    const outcome = await removeLocalConfigHomeWithRetry(candidate);
-    if (!outcome.removed) {
-      logger.debug('pi configHome orphan cleanup failed (retried next startSession)', {
-        configHomeId: entry.name,
-        message: outcome.error instanceof Error ? outcome.error.message : String(outcome.error),
+  let offset = 0;
+  while (offset < entries.length) {
+    if (offset > 0) {
+      // A large backlog is split into separate event-loop turns. This bounds
+      // each reclaim round and lets startup, IPC, and rendering work proceed.
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, 0);
+        timer.unref();
       });
     }
+    // Re-probe every owner incarnation in every round. Carrying this memo across
+    // the yield could hide a pid that died and was recycled between rounds.
+    const ownerStartTimeMemo: ProcessStartTimeMemo = new Map();
+    const roundStartedAt = Date.now();
+    let inspected = 0;
+    while (offset < entries.length && inspected < LOCAL_CONFIG_HOME_SWEEP_ENTRY_BUDGET) {
+      if (
+        inspected > 0
+        && Date.now() - roundStartedAt >= LOCAL_CONFIG_HOME_SWEEP_TIME_BUDGET_MS
+      ) break;
+      const entry = entries[offset++]!;
+      inspected += 1;
+      if (!entry.isDirectory()) continue;
+      const candidate = path.resolve(runTmp, entry.name);
+      if (path.dirname(candidate) !== runTmp) continue;
+      const owner = await readLocalConfigHomeOwner(candidate);
+      // Markerless homes may belong to an older Cindy instance between directory
+      // creation and Pi spawn. No process snapshot can prove them reclaimable.
+      if (!owner) continue;
+      if (await localConfigHomeOwnerIsActive(owner, candidate, ownerStartTimeMemo)) continue;
+
+      // Re-read immediately before deletion. A directory whose marker changed or
+      // whose owner became active is no longer the orphan we proved above.
+      const currentOwner = await readLocalConfigHomeOwner(candidate);
+      if (
+        !currentOwner
+        || !sameLocalConfigHomeOwner(currentOwner, owner)
+      ) continue;
+      if (await localConfigHomeOwnerIsActive(currentOwner, candidate, ownerStartTimeMemo)) continue;
+
+      const outcome = await removeLocalConfigHomeWithRetry(candidate);
+      if (!outcome.removed) {
+        logger.debug('pi configHome orphan cleanup failed (retried next startSession)', {
+          configHomeId: entry.name,
+          message: outcome.error instanceof Error ? outcome.error.message : String(outcome.error),
+        });
+      }
+    }
   }
+}
+
+/** Coalesce startup-triggered sweeps without putting reclamation on the startup critical path. */
+function scheduleStaleLocalConfigHomeSweep(
+  agentHome: string,
+  logger: ConfigHomeCleanupLogger,
+): void {
+  const sweepKey = localConfigHomeKey(path.resolve(agentHome, 'run-tmp'));
+  if (activeLocalConfigHomeSweeps.has(sweepKey)) return;
+  activeLocalConfigHomeSweeps.add(sweepKey);
+  const timer = setTimeout(() => {
+    void sweepStaleLocalConfigHomes(agentHome, logger)
+      .catch((error) => {
+        logger.debug('pi configHome orphan scan failed (non-fatal)', {
+          message: error instanceof Error ? error.message : String(error),
+        });
+      })
+      .finally(() => {
+        activeLocalConfigHomeSweeps.delete(sweepKey);
+      });
+  }, 0);
+  timer.unref();
 }
 
 /** cindy Effort → pi thinking level(pi 无 ultra)。思考开关走 setThinkingEnabled / thinkingEnabled。 */
@@ -2308,7 +2353,7 @@ export class PiAgent extends BaseAgent {
       });
     }
     if (!remote) {
-      await sweepStaleLocalConfigHomes(
+      scheduleStaleLocalConfigHomeSweep(
         agentHome,
         this.deps.logger,
       );

@@ -2449,6 +2449,76 @@ describe('PiAgent.startSession failure cleanup (mocked pi process)', () => {
     }
   });
 
+  it('starts a new session while stale config-home cleanup is blocked and finishes the backlog later', async () => {
+    const { promises: fs } = await import('node:fs');
+    const originalRm = fs.rm.bind(fs);
+    const staleHomes = Array.from({ length: 10 }, (_, index) => {
+      const staleHome = path.join(agentHome, 'run-tmp', `stale-budget-${index}`);
+      mkdirSync(staleHome, { recursive: true });
+      writeFileSync(
+        path.join(staleHome, '.cindy-owner.json'),
+        `${JSON.stringify({
+          version: 1,
+          ownerPid: 2_147_483_647,
+          createdAt: 1,
+          directoryName: path.basename(staleHome),
+        })}\n`,
+      );
+      return staleHome;
+    });
+    const staleHomeKeys = new Set(staleHomes.map((home) => path.resolve(home)));
+    let announceRemovalStarted!: () => void;
+    const removalStarted = new Promise<void>((resolve) => { announceRemovalStarted = resolve; });
+    let releaseRemoval!: () => void;
+    const removalGate = new Promise<void>((resolve) => { releaseRemoval = resolve; });
+    let removalReleased = false;
+    let staleRemovalCount = 0;
+    let batchYieldObservedAt: number | undefined;
+    const unblockRemoval = (): void => {
+      if (removalReleased) return;
+      removalReleased = true;
+      releaseRemoval();
+    };
+    const rmSpy = vi.spyOn(fs, 'rm').mockImplementation(async (target, options) => {
+      if (staleHomeKeys.has(path.resolve(String(target)))) {
+        staleRemovalCount += 1;
+        if (staleRemovalCount === 8) {
+          setTimeout(() => { batchYieldObservedAt = staleRemovalCount; }, 0);
+        }
+        announceRemovalStarted();
+        await removalGate;
+        rmSync(String(target), { recursive: true, force: true });
+        return;
+      }
+      return originalRm(target, options);
+    });
+    const startPromise = new PiAgent(buildDeps()).startSession({
+      sessionId: 'bounded-stale-sweep',
+      workingDir: cwd,
+      model: 'm',
+    });
+    let handle: Awaited<typeof startPromise> | undefined;
+    try {
+      await removalStarted;
+      await vi.waitFor(
+        () => expect(knobs.spawnedEnvs.some(
+          (env) => env.CINDY_PI_SESSION_ID === 'bounded-stale-sweep',
+        )).toBe(true),
+        { timeout: 500 },
+      );
+      unblockRemoval();
+      handle = await startPromise;
+      await waitFor(() => staleHomes.every((home) => !existsSync(home)));
+      await vi.waitFor(() => expect(batchYieldObservedAt).toBe(8));
+    } finally {
+      unblockRemoval();
+      handle ??= await startPromise;
+      rmSpy.mockRestore();
+      await handle.close();
+      await Promise.all(staleHomes.map((home) => originalRm(home, { recursive: true, force: true })));
+    }
+  });
+
   it('reclaims a v2 local config home whose owner pid was recycled', async () => {
     const runtimeId = 'a'.repeat(32);
     const recycledHome = path.join(agentHome, 'run-tmp', runtimeId);
@@ -2472,7 +2542,7 @@ describe('PiAgent.startSession failure cleanup (mocked pi process)', () => {
       model: 'm',
     });
     try {
-      expect(existsSync(recycledHome)).toBe(false);
+      await waitFor(() => !existsSync(recycledHome));
     } finally {
       await handle.close();
     }
@@ -2499,10 +2569,9 @@ describe('PiAgent.startSession failure cleanup (mocked pi process)', () => {
       return ownerHome;
     });
     const probeMemos: unknown[] = [];
-    const ownerProbe = vi
-      .spyOn(piSubagentRuns, 'isPiHostProcessInstanceAlive')
-      .mockImplementation(function () {
-        probeMemos.push(arguments[1]);
+    vi.spyOn(piSubagentRuns, 'isPiHostProcessInstanceAliveAsync')
+      .mockImplementation(async (identity, memo) => {
+        if (identity.pid === ownerPid) probeMemos.push(memo);
         return true;
       });
 
@@ -2512,7 +2581,7 @@ describe('PiAgent.startSession failure cleanup (mocked pi process)', () => {
       model: 'm',
     });
     try {
-      expect(ownerProbe).toHaveBeenCalledTimes(ownerHomes.length);
+      await vi.waitFor(() => expect(probeMemos).toHaveLength(ownerHomes.length));
       // pi-subagent-runs separately locks that one shared memo means one
       // PowerShell/ps start-time probe per owner pid and sweep.
       expect(probeMemos[0]).toBeInstanceOf(Map);
@@ -2616,8 +2685,7 @@ describe('PiAgent.startSession failure cleanup (mocked pi process)', () => {
         model: "m",
       });
       try {
-        expect(existsSync(orphanedHome)).toBe(false);
-        expect(existsSync(deadOwnerHome)).toBe(false);
+        await waitFor(() => !existsSync(orphanedHome) && !existsSync(deadOwnerHome));
         expect(existsSync(path.join(activeHome, "models.json"))).toBe(true);
         expect(existsSync(liveOwnerHome)).toBe(true);
       } finally {
