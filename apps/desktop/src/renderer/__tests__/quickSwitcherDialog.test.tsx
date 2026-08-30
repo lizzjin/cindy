@@ -24,6 +24,7 @@ const h = vi.hoisted(() => ({
   pin: vi.fn(),
   origin: vi.fn(),
   patched: new Set<(payload: { sessionId: string; patch: Partial<Session> }) => void>(),
+  browserCommands: new Set<(payload: { command: string }) => void>(),
   t: (key: string) => key,
 }));
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: h.t }) }));
@@ -55,6 +56,7 @@ import { QuickSwitcher } from '@/features/cc-agent/QuickSwitcher';
 import { catalogSessionForGrouping } from '@/features/cc-agent/lib/quickSwitcher';
 import { setDataOwnerGeneration } from '@/contexts/dataOwnerGeneration';
 import { clearQuickSwitcherFocus, useQuickSwitcherFocus } from '@/state/quickSwitcherFocus';
+import { acquireAppInteractionLock } from '@/lib/appInteractionLock';
 
 function row(id: string, patch: Partial<QuickSwitcherSession> = {}): QuickSwitcherSession {
   return {
@@ -122,6 +124,7 @@ beforeEach(() => {
   h.aliases.clear();
   h.hidden.clear();
   h.patched.clear();
+  h.browserCommands.clear();
   setDataOwnerGeneration('owner', 1);
   h.catalog.mockResolvedValue(page(row('a'), row('b')));
   h.get.mockImplementation(async (id: string) => catalogSessionForGrouping(row(id)));
@@ -136,6 +139,10 @@ beforeEach(() => {
     configurable: true,
     value: {
       platform: 'win32',
+      onRsbBrowserCommand: (listener: (payload: { command: string }) => void) => {
+        h.browserCommands.add(listener);
+        return () => h.browserCommands.delete(listener);
+      },
       appShortcuts: {
         getState: () => ({ platform: 'win32', overrides: {} }),
         onChanged: () => () => {},
@@ -164,6 +171,46 @@ afterEach(() => {
 });
 
 describe('quick switch dialog', () => {
+  it('opens and focuses from a forwarded WebView shortcut, then removes its listener on unmount', async () => {
+    const view = render(<MemoryRouter><Harness /></MemoryRouter>);
+    screen.getByLabelText('draft').focus();
+    act(() => h.browserCommands.forEach((listener) => listener({ command: 'reload' })));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    await act(async () =>
+      h.browserCommands.forEach((listener) => listener({ command: 'open-quick-switcher' })),
+    );
+    expect(screen.getByRole('dialog')).toBeTruthy();
+    expect(document.activeElement).toBe(screen.getByRole('combobox'));
+    act(() => h.browserCommands.forEach((listener) => listener({ command: 'open-quick-switcher' })));
+    expect(screen.getByRole('dialog')).toBeTruthy();
+    fireEvent.keyDown(screen.getByRole('combobox'), { key: 'Escape' });
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText('draft')));
+    view.unmount();
+    expect(h.browserCommands.size).toBe(0);
+  });
+
+  it('ignores forwarded shortcuts during recording or an interaction lock', async () => {
+    render(<MemoryRouter><Harness /></MemoryRouter>);
+    const forward = () =>
+      h.browserCommands.forEach((listener) => listener({ command: 'open-quick-switcher' }));
+    document.body.dataset.appShortcutRecording = '1';
+    try {
+      act(forward);
+      expect(screen.queryByRole('dialog')).toBeNull();
+    } finally {
+      delete document.body.dataset.appShortcutRecording;
+    }
+    const release = acquireAppInteractionLock();
+    try {
+      act(forward);
+      expect(screen.queryByRole('dialog')).toBeNull();
+    } finally {
+      release();
+    }
+    await act(async () => forward());
+    expect(screen.getByRole('dialog')).toBeTruthy();
+  });
+
   it('opens the latest keyboard choice when arrow and Enter arrive before the next paint', async () => {
     const input = setup();
     await search('Task');

@@ -60,6 +60,7 @@ export function quickSwitcherProjects(
   const keys = new Set(projects.map((p) => projectKeyComparisonKey(p.projectKey, platform)));
   // Recent directories also represent empty projects. They do not contribute fake tasks.
   for (const dir of recent) {
+    if (!dir.exists) continue;
     const workingDir = normalizeWorkingDir(dir.path);
     if (!workingDir) continue;
     const projectKey = projectIdentityKey('local', workingDir, null);

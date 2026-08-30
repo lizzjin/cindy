@@ -331,7 +331,8 @@ export type RsbBrowserCommand =
   | 'reload'
   | 'close-tab'
   | 'right-tab-prev'
-  | 'right-tab-next';
+  | 'right-tab-next'
+  | 'open-quick-switcher';
 
 /** guest before-input-event 命中后的动作。 */
 export type RsbGuestShortcutAction =
@@ -367,6 +368,7 @@ const GUEST_SHORTCUT_ACTIONS: ReadonlyArray<{
   { id: 'close-tab-or-window', action: { kind: 'command', command: 'close-tab' } },
   { id: 'right-tab-prev', action: { kind: 'command', command: 'right-tab-prev' } },
   { id: 'right-tab-next', action: { kind: 'command', command: 'right-tab-next' } },
+  { id: 'open-quick-switcher', action: { kind: 'command', command: 'open-quick-switcher' } },
   { id: 'browser-focus-url', action: { kind: 'focus-url-bar' } },
   { id: 'browser-back', action: { kind: 'command', command: 'go-back' } },
   { id: 'browser-forward', action: { kind: 'command', command: 'go-forward' } },
@@ -778,15 +780,20 @@ export function installBrowserGuestHandlers(
   });
 
   // Chromium guest key events do not bubble to the host renderer. Forward the
-  // browser-level shortcuts through the existing host channel for both
+  // browser and quick-switcher shortcuts through the existing host channel for both
   // ordinary webviews and adopted popup WebContents.
   guestContents.on('before-input-event', (event, input) => {
     if (!isGuestShortcutKeyDownType(input.type)) return;
-    const store = getAppShortcutStore();
-    const action = resolveGuestShortcutAction(input, (id) =>
-      store.getEffectiveCombos(id),
-    );
+    // Use the same conflict-aware map as the renderer: new defaults yield to user bindings.
+    const combos = getAppShortcutStore().getEffectiveMap();
+    const action = resolveGuestShortcutAction(input, (id) => combos.get(id) ?? []);
     if (!action) return;
+    if (
+      action.kind === 'command' &&
+      action.command === 'open-quick-switcher' &&
+      (input.isAutoRepeat || input.isComposing)
+    )
+      return;
     event.preventDefault();
     let target: WebContents | null = null;
     try {

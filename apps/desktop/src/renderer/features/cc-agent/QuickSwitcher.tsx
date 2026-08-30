@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate } from 'react-router-dom';
 
 import { useAppShortcut } from '@/hooks/useAppShortcut';
+import { isAppInteractionLocked } from '@/lib/appInteractionLock';
 import { useSwitcherDevices } from '@/features/device-link/useMachineSwitcher';
 import {
   remoteProjectsStore,
@@ -58,6 +59,20 @@ export function QuickSwitcher({ revealSidebar }: { revealSidebar: () => void }) 
     clearQuickSwitcherFocusOutsideRoute(location.pathname);
   }, [location.pathname]);
   useEffect(() => () => clearQuickSwitcherFocus(), []);
+  useEffect(
+    () =>
+      window.electronAPI.onRsbBrowserCommand?.(({ command }) => {
+        if (
+          command === 'open-quick-switcher' &&
+          document.body.dataset.appShortcutRecording !== '1' &&
+          !isAppInteractionLocked()
+        ) {
+          // Guest keys cannot reach useAppShortcut; repeated signals must not close the dialog.
+          setOpen(true);
+        }
+      }),
+    [],
+  );
   useEffect(() => {
     const offLocal = window.electronAPI.localDb.sessionsPush?.onPatched(
       ({ sessionId, patch }, stamp) => {

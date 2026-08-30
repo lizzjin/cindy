@@ -44,6 +44,41 @@ function search(
 }
 
 describe('quick switch matching and project identity', () => {
+  it('excludes unavailable recent empty projects without hiding real local, SSH or device tasks', () => {
+    // These are logical project paths, independent of the host filesystem.
+    const sessions = [
+      row('local'),
+      row('ssh', { remoteHostId: 'ssh-box' }),
+      row('device', { deviceLinkDeviceId: 'device' }),
+    ].map(catalogSessionForGrouping);
+    const projects = quickSwitcherProjects(
+      sessions,
+      new Map(),
+      [
+        { path: '/missing', exists: false, lastUsedAt: '2026-01-01T00:00:00Z' },
+        { path: '/empty', exists: true, lastUsedAt: '2026-01-01T00:00:00Z' },
+        { path: '/repo', exists: false, lastUsedAt: '2026-01-01T00:00:00Z' },
+      ],
+      'win32',
+    );
+    expect(
+      projects.filter((project) => project.sessions.length === 0).map((p) => p.workingDir),
+    ).toEqual(['/empty']);
+    expect(
+      projects.flatMap((project) => project.sessions.map((session) => session.id)).sort(),
+    ).toEqual(['device', 'local', 'ssh']);
+    expect(
+      searchQuickSwitcher({
+        query: 'missing',
+        sessions,
+        projects,
+        hiddenProjectKeys: new Set(),
+        platform: 'win32',
+        unnamedLabel: 'Untitled Task',
+      }).results,
+    ).toEqual([]);
+  });
+
   it('searches the entire history before limiting, including archived tasks', () => {
     const rows = Array.from({ length: 300 }, (_, i) =>
       row(String(i), { title: `long needle ${i}` }),
