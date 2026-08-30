@@ -87,6 +87,24 @@ describe('VoiceInputDataStore persistence', () => {
     );
   });
 
+  it('returns isolated live shortcut snapshots and reflects clearing the binding', () => {
+    const store = new VoiceInputDataStore();
+    const shortcut = {
+      trigger: 'keyboard',
+      code: 'KeyK',
+      key: 'k',
+      modifiers: { meta: false, ctrl: true, alt: false, shift: false, fn: false },
+    };
+    store.updateSettings({ shortcut });
+    const snapshot = store.getShortcut();
+    expect(snapshot).toEqual(shortcut);
+    snapshot!.code = 'KeyJ';
+    snapshot!.modifiers.ctrl = false;
+    expect(store.getShortcut()).toEqual(shortcut);
+    store.updateSettings({ shortcut: null });
+    expect(store.getShortcut()).toBeNull();
+  });
+
   it.each([
     ['writeFileSync', 'disk full'],
     ['renameSync', 'rename denied'],

@@ -21,16 +21,24 @@ import { EventEmitter } from 'node:events';
 
 import type { BrowserWindow, Session, WebContents } from 'electron';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { AppShortcutOverrides } from '../../shared/appShortcuts';
+import type { AppShortcutCombo, AppShortcutOverrides } from '../../shared/appShortcuts';
+import type { VoiceInputShortcut } from '../../shared/voiceInputData';
 
-const shortcutMocks = vi.hoisted(() => {
-  const overrides: AppShortcutOverrides = {};
-  return { overrides };
-});
+const shortcutMocks = vi.hoisted((): {
+  overrides: AppShortcutOverrides;
+  platform: string;
+  voiceShortcut: VoiceInputShortcut | null;
+} => ({ overrides: {}, platform: 'win32', voiceShortcut: null }));
 vi.mock('../app-shortcuts/index.js', () => ({
   getAppShortcutStore: () => ({
-    getEffectiveMap: () => getEffectiveAppShortcuts(shortcutMocks.overrides, 'win32'),
+    getEffectiveMap: (yieldToCombos: ReadonlyArray<AppShortcutCombo> = []) =>
+      getEffectiveAppShortcuts(shortcutMocks.overrides, shortcutMocks.platform, yieldToCombos),
   }),
+}));
+vi.mock('../voice-input/VoiceInputDataStore.js', () => ({
+  voiceInputDataStore: {
+    getShortcut: () => shortcutMocks.voiceShortcut,
+  },
 }));
 
 const nativeSurfaceMocks = vi.hoisted(() => ({
@@ -223,6 +231,8 @@ describe('BLANK_POPUP_WINDOW_WEB_PREFERENCES(popup WebContents 安全集)', () =
 describe('installBrowserGuestHandlers(main-owned popup)', () => {
   afterEach(() => {
     shortcutMocks.overrides = {};
+    shortcutMocks.platform = 'win32';
+    shortcutMocks.voiceShortcut = null;
     nativeSurfaceMocks.create.mockClear();
     nativeSurfaceMocks.attribute.mockClear();
     setRsbPopupOpenerResolver(null);
@@ -282,6 +292,58 @@ describe('installBrowserGuestHandlers(main-owned popup)', () => {
     expect(currentHost.send).not.toHaveBeenCalled();
     expect(event.preventDefault).not.toHaveBeenCalled();
   });
+
+  it.each(['darwin', 'win32', 'linux'])(
+    'yields guest quick-switcher keys to live voice bindings on %s',
+    (platform) => {
+      shortcutMocks.platform = platform;
+      const host = makeContents(1);
+      const guest = makeContents(42);
+      installBrowserGuestHandlers(host as never, guest as never);
+      const event = { preventDefault: vi.fn() };
+      const input = {
+        type: 'keyDown',
+        code: 'KeyK',
+        key: 'k',
+        meta: platform === 'darwin',
+        control: platform !== 'darwin',
+        alt: false,
+        shift: false,
+      };
+      const voiceShortcut: VoiceInputShortcut = {
+        trigger: 'keyboard',
+        code: 'KeyK',
+        key: 'k',
+        modifiers: { meta: input.meta, ctrl: input.control, alt: false, shift: false, fn: false },
+      };
+      shortcutMocks.voiceShortcut = voiceShortcut;
+      guest.emit('before-input-event', event, input);
+      expect(event.preventDefault).not.toHaveBeenCalled();
+      expect(host.send).not.toHaveBeenCalled();
+
+      // Rebinds, clearing and native-only keys release the default on the same guest.
+      const nonConflicting: Array<VoiceInputShortcut | null> = [
+        { ...voiceShortcut, code: 'KeyJ', key: 'j' },
+        null,
+        { ...voiceShortcut, modifiers: { ...voiceShortcut.modifiers, fn: true } },
+        { ...voiceShortcut, trigger: 'modifier', code: 'ControlLeft', key: 'Control' },
+      ];
+      for (const shortcut of nonConflicting) {
+        shortcutMocks.voiceShortcut = shortcut;
+        guest.emit('before-input-event', event, input);
+        expect(event.preventDefault).toHaveBeenCalledOnce();
+        expect(host.send).toHaveBeenCalledExactlyOnceWith(RSB_BROWSER_COMMAND_CHANNEL, {
+          command: 'open-quick-switcher',
+        });
+        event.preventDefault.mockClear();
+        host.send.mockClear();
+      }
+      shortcutMocks.voiceShortcut = voiceShortcut;
+      guest.emit('before-input-event', event, input);
+      expect(event.preventDefault).not.toHaveBeenCalled();
+      expect(host.send).not.toHaveBeenCalled();
+    },
+  );
 
   it.each([
     ['direct URL', 'https://accounts.example.com/oauth'],

@@ -40,6 +40,8 @@ import {
   type AppShortcutId,
 } from '../shared/appShortcuts';
 import { getAppShortcutStore } from './app-shortcuts/index.js';
+import { voiceInputShortcutToAppShortcutCombo } from '../shared/voiceInputAppShortcut';
+import { voiceInputDataStore } from './voice-input/VoiceInputDataStore.js';
 import {
   handleGhostExternalLinkNavigation,
   handleGhostPreviewNavigation,
@@ -784,8 +786,10 @@ export function installBrowserGuestHandlers(
   // ordinary webviews and adopted popup WebContents.
   guestContents.on('before-input-event', (event, input) => {
     if (!isGuestShortcutKeyDownType(input.type)) return;
-    // Use the same conflict-aware map as the renderer: new defaults yield to user bindings.
-    const combos = getAppShortcutStore().getEffectiveMap();
+    // Match the renderer's external voice-key yielding, including live rebinds/owner changes.
+    const voiceShortcut = voiceInputDataStore.getShortcut();
+    const voiceCombo = voiceShortcut ? voiceInputShortcutToAppShortcutCombo(voiceShortcut) : null;
+    const combos = getAppShortcutStore().getEffectiveMap(voiceCombo ? [voiceCombo] : []);
     const action = resolveGuestShortcutAction(input, (id) => combos.get(id) ?? []);
     if (!action) return;
     if (
