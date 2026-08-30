@@ -109,6 +109,8 @@ import {
 } from '@/lib/sessionAttentionStore';
 import { patchDraft as patchNewMakerDraft } from '@/state/newMakerDraft';
 import { consumePendingProjectFocus, usePendingProjectFocus } from '@/state/pendingProjectFocus';
+import { clearQuickSwitcherFocus, useQuickSwitcherFocus } from '@/state/quickSwitcherFocus';
+import { revealQuickSwitcherTarget } from './lib/quickSwitcherReveal';
 import {
   requestConversationSearch,
   useConversationSearchRequest,
@@ -416,9 +418,31 @@ export function CCAgentSidebarUpper() {
   // F-PJ-10：filter.status 决定后端 fetch 时是否带 ?status=archived|all
   const hiddenProjects = useHiddenProjects();
   const { hiddenProjectKeys, initialSnapshot: sidebarSettingsSnapshot } = hiddenProjects;
-  const filter = useSidebarFilter(hiddenProjectKeys, sidebarSettingsSnapshot);
+  const savedFilter = useSidebarFilter(hiddenProjectKeys, sidebarSettingsSnapshot);
+  const quickFocus = useQuickSwitcherFocus();
+  const filter = useMemo<UseSidebarFilterReturn>(() => quickFocus ? {
+    ...savedFilter, status: 'all', projects: 'all', projectsAsSet: null,
+    vendor: 'all', lastActivity: 'all', groupBy: 'project',
+    isFilterActive: false, isSessionContentFiltered: false,
+    // A temporary projection must not garbage-collect the saved filter universe.
+    gc: () => {},
+    setStatus: (value) => { clearQuickSwitcherFocus(); savedFilter.setStatus(value); },
+    toggleProject: (value) => { clearQuickSwitcherFocus(); savedFilter.toggleProject(value); },
+    setProjectsAll: () => { clearQuickSwitcherFocus(); savedFilter.setProjectsAll(); },
+    setVendor: (value) => { clearQuickSwitcherFocus(); savedFilter.setVendor(value); },
+    setLastActivity: (value) => { clearQuickSwitcherFocus(); savedFilter.setLastActivity(value); },
+    setGroupBy: (value) => { clearQuickSwitcherFocus(); savedFilter.setGroupBy(value); },
+    resetContentFilters: () => { clearQuickSwitcherFocus(); savedFilter.resetContentFilters(); },
+  } : savedFilter, [savedFilter, quickFocus]);
   const includeArchived = filter.status;
-  const sessionsHook = useCCSessions({ includeArchived });
+  const storedSessionsHook = useCCSessions({ includeArchived });
+  const focusedSessions = useMemo(() => {
+    const target = quickFocus?.session;
+    if (!target || target.deviceLinkDeviceId || storedSessionsHook.sessions.some((s) => s.id === target.id)) return storedSessionsHook.sessions;
+    return [...storedSessionsHook.sessions, target];
+  }, [storedSessionsHook.sessions, quickFocus]);
+  const sessionsHook = { ...storedSessionsHook, sessions: focusedSessions,
+    effectiveIncludeArchived: quickFocus ? 'all' as const : storedSessionsHook.effectiveIncludeArchived };
   const { sessions: allSessionsForAttention } = useCCSessions({ includeArchived: 'all' });
   const remoteProjectSessions = useRemoteProjectSessions();
   const remoteDevices = useRemoteDevices();
@@ -823,6 +847,7 @@ function ExpandedView({
   scheduleSessionIndex,
 }: ExpandedProps) {
   const { t, i18n } = useTranslation();
+  const quickFocus = useQuickSwitcherFocus();
   const localPlatform = window.electronAPI.platform;
   const { sessions, refreshSessions, patchLocal, effectiveIncludeArchived } = sessionsHook;
   const {
@@ -1410,20 +1435,31 @@ function ExpandedView({
   const groups = useProjectGroups(activityFilteredSessions, projectAliases.aliases);
   // 普通项目目录也需要保留「所有会话都已单独置顶」的项目身份，供用户继续
   // 从 ProjectNode 菜单置顶整个项目；实际项目子行在渲染前仍会排除已置顶会话。
-  const groupsWithPinnedProjects = useProjectGroups(
+  const groupedWithPinnedProjects = useProjectGroups(
     activityFilteredSessions,
     projectAliases.aliases,
     true,
   );
+  const groupsWithPinnedProjects = useMemo(() => {
+    const project = quickFocus?.project;
+    if (!project || project.sessions.length > 0 || isProjectHidden(project.projectKey, hiddenProjectKeys, localPlatform) || groupedWithPinnedProjects.projects.some((p) => p.projectKey === project.projectKey)) return groupedWithPinnedProjects;
+    return { ...groupedWithPinnedProjects, projects: [...groupedWithPinnedProjects.projects, project] };
+  }, [groupedWithPinnedProjects, quickFocus, hiddenProjectKeys, localPlatform]);
   // Project pinning is independent from conversation pinning. This catalogue
   // keeps pinned conversations inside their project solely for project identity
   // and project-level actions; the normal project tree above remains deduped.
-  const allProjectGroups = useProjectGroups(sidebarSessions, projectAliases.aliases, true);
+  const groupedAllProjectGroups = useProjectGroups(sidebarSessions, projectAliases.aliases, true);
+  const allProjectGroups = quickFocus ? groupsWithPinnedProjects : groupedAllProjectGroups;
   const activeWorkingDirs = useMemo(
     () => allProjectGroups.projects.map((p) => p.projectKey),
     [allProjectGroups.projects],
   );
   const collapse = useCollapsedProjects(activeWorkingDirs, sidebarSettingsSnapshot.dataOwnerId);
+  useEffect(() => {
+    if (!quickFocus) return;
+    if (quickFocus.project) collapse.expand(quickFocus.project.projectKey);
+    return revealQuickSwitcherTarget({ kind: quickFocus.kind, sessionId: quickFocus.session?.id ?? null, projectKey: quickFocus.project?.projectKey ?? null });
+  }, [quickFocus, collapse.expand]);
 
   // 项目过滤 GC 的「宇宙」用**全量**(不按机器过滤)项目键 —— 否则在某机器作用域下 remount,
   // gcProjectsAgainstActive 会把其它机器的项目从已保存的项目过滤里误删(它们只是被切换栏隐藏、
@@ -1443,7 +1479,16 @@ function ExpandedView({
 
   // 内联会话搜索:输入行在 SidebarTopNav 末行,状态经 ConversationSearchProvider 共享;
   // query 非空时同一份顶部导航 sticky 钉住,结果替换下方列表,不再用 overlay 盖输入框。
-  const { search, openSignal } = useConversationSearchContext();
+  const { search: sidebarSearch, openSignal } = useConversationSearchContext();
+  const revealSearch = useRef({ nonce: quickFocus?.nonce, query: sidebarSearch.query, openSignal });
+  useEffect(() => {
+    const previous = revealSearch.current;
+    if (quickFocus && previous.nonce === quickFocus.nonce && (previous.query !== sidebarSearch.query || previous.openSignal !== openSignal)) clearQuickSwitcherFocus();
+    revealSearch.current = { nonce: quickFocus?.nonce, query: sidebarSearch.query, openSignal };
+  }, [quickFocus, sidebarSearch.query, openSignal]);
+  // Preserve the independent search query/lock; only its result overlay yields
+  // while a quick-switch destination is being revealed.
+  const search = quickFocus ? { ...sidebarSearch, trimmed: '' } : sidebarSearch;
   const gcProjectKeys = useMemo(
     () => projectUniverse.projects.map((p) => p.projectKey),
     [projectUniverse.projects],
@@ -1709,7 +1754,7 @@ function ExpandedView({
       const matchingSessions = vendorPredicate
         ? project.sessions.filter(vendorPredicate)
         : project.sessions;
-      if (matchingSessions.length === 0) return [];
+      if (matchingSessions.length === 0 && project.projectKey !== quickFocus?.project?.projectKey) return [];
       return [
         {
           ...project,
@@ -1723,7 +1768,7 @@ function ExpandedView({
       hostProjectSort.order,
       hostProjectSort.projectOrder,
     );
-  }, [visibleProjects, pinnedProjectKeys, vendorPredicate, hostProjectSort]);
+  }, [visibleProjects, pinnedProjectKeys, vendorPredicate, hostProjectSort, quickFocus]);
 
   // 折叠 rail 没有独立的 Pinned 项目瓷砖，因此项目面板必须保留置顶项目，
   // 否则侧栏折叠后这些项目及其取消置顶入口都会完全不可达。

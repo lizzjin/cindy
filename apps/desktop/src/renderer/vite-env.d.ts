@@ -4361,6 +4361,7 @@ interface ElectronAPI {
       // Stage 2 C2: fork 已迁到 electronAPI.maker.fork (走 maker:fork IPC)。
     };
     conversations: {
+      catalog: (cursor?: string | null) => Promise<import('../shared/quickSwitcher').QuickSwitcherCatalogPage>;
       search: (
         request: import('../shared/conversationSearch').ConversationSearchRequest,
       ) => Promise<import('../shared/conversationSearch').ConversationSearchResponse>;

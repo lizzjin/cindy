@@ -4946,6 +4946,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       // Stage 2 C2: fork 已迁到 electronAPI.maker.fork (走 maker:fork IPC)。
     },
     conversations: {
+      catalog: (cursor?: string | null) => ipcRenderer.invoke('local-db:conversations:catalog', cursor),
       search: (request: unknown): Promise<unknown> =>
         ipcRenderer.invoke('local-db:conversations:search', request),
     },
