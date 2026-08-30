@@ -110,7 +110,6 @@ import {
 import { patchDraft as patchNewMakerDraft } from '@/state/newMakerDraft';
 import { consumePendingProjectFocus, usePendingProjectFocus } from '@/state/pendingProjectFocus';
 import { clearQuickSwitcherFocus, useQuickSwitcherFocus } from '@/state/quickSwitcherFocus';
-import { revealQuickSwitcherTarget } from './lib/quickSwitcherReveal';
 import {
   requestConversationSearch,
   useConversationSearchRequest,
@@ -122,6 +121,7 @@ import { emitRefresh, onPatch } from '@/lib/sessionsBus';
 import { useProjectGroups } from './hooks/useProjectGroups';
 import { useProjectAliases } from './hooks/useProjectAliases';
 import { useCollapsedProjects } from './hooks/useCollapsedProjects';
+import { useQuickSwitcherProjectReveal } from './hooks/useQuickSwitcherProjectReveal';
 import { useOrcaLeadWorkerMap } from './hooks/useOrcaLeadWorkerMap';
 import { useOrcaWorkerAttentionWatcher } from './hooks/useOrcaWorkerAttentionWatcher';
 import { useAutomationScheduleSessionIndex } from './hooks/useAutomationScheduleSessionIndex';
@@ -1455,11 +1455,7 @@ function ExpandedView({
     [allProjectGroups.projects],
   );
   const collapse = useCollapsedProjects(activeWorkingDirs, sidebarSettingsSnapshot.dataOwnerId);
-  useEffect(() => {
-    if (!quickFocus) return;
-    if (quickFocus.project) collapse.expand(quickFocus.project.projectKey);
-    return revealQuickSwitcherTarget({ kind: quickFocus.kind, sessionId: quickFocus.session?.id ?? null, projectKey: quickFocus.project?.projectKey ?? null });
-  }, [quickFocus, collapse.expand]);
+  const projectReveal = useQuickSwitcherProjectReveal(collapse, activeWorkingDirs);
 
   // 项目过滤 GC 的「宇宙」用**全量**(不按机器过滤)项目键 —— 否则在某机器作用域下 remount,
   // gcProjectsAgainstActive 会把其它机器的项目从已保存的项目过滤里误删(它们只是被切换栏隐藏、
@@ -3607,9 +3603,9 @@ function ExpandedView({
                       displaySessions={displaySessions}
                       sessionVariant={sessionVariant}
                       statusFilter={filter.status}
-                      isCollapsed={collapse.collapsed.has(project.projectKey)}
+                      isCollapsed={projectReveal.collapsed.has(project.projectKey)}
                       collapsedAttentionTone={
-                        collapse.collapsed.has(project.projectKey)
+                        projectReveal.collapsed.has(project.projectKey)
                           ? collapsedAttentionToneFor(displaySessions ?? project.sessions)
                           : null
                       }
@@ -3621,7 +3617,7 @@ function ExpandedView({
                       scheduleSessionIndex={scheduleSessionIndex}
                       selectedSessionIds={selectedSessionIds}
                       disableSessionCollapse={false}
-                      onToggle={collapse.toggle}
+                      onToggle={projectReveal.toggle}
                       isProjectPinned
                       onToggleProjectPin={handleToggleProjectPin}
                       onRenameProject={handleProjectAliasChange}
@@ -3665,8 +3661,8 @@ function ExpandedView({
                   dialogueCount={allGroups.dialogues.length}
                   allProjectKeysForOrder={gcProjectKeys}
                   filter={filter}
-                  collapsed={collapse.collapsed}
-                  isAllCollapsed={collapse.isAllCollapsed}
+                  collapsed={projectReveal.collapsed}
+                  isAllCollapsed={projectReveal.isAllCollapsed}
                   activeSessionId={activeSessionId}
                   viewedSessionId={viewedSessionId}
                   runningSessionIds={displayRunningSessionIds}
@@ -3681,12 +3677,12 @@ function ExpandedView({
                   onMoveSession={handleMoveSession}
                   projectOptions={projectPickerOptions}
                   onScheduleAction={handleScheduleAction}
-                  onToggleProject={collapse.toggle}
+                  onToggleProject={projectReveal.toggle}
                   onToggleProjectPin={handleToggleProjectPin}
                   onRenameProject={handleProjectAliasChange}
                   onRemoveFromSidebar={handleRemoveProjectFromSidebar}
-                  onCollapseAll={collapse.collapseAll}
-                  onExpandAll={collapse.expandAll}
+                  onCollapseAll={projectReveal.collapseAll}
+                  onExpandAll={projectReveal.expandAll}
                   onCreateProject={handleCreateProject}
                   onCreateInProject={handleCreateInProject}
                   onOpenConversationSearch={handleOpenConversationSearch}
