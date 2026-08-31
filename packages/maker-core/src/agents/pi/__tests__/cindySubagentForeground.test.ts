@@ -23,7 +23,7 @@ async function fixture() {
   const root = await mkdtemp(path.join(os.tmpdir(), 'cindy-pi-subagent-foreground-'));
   roots.push(root);
   const configHome = path.join(root, 'pi-home');
-  const extensions = path.join(configHome, 'extensions');
+  const extensions = path.join(configHome, 'internal-extensions');
   const runRoot = path.join(root, 'runs');
   await mkdir(extensions, { recursive: true });
   await mkdir(runRoot, { recursive: true });

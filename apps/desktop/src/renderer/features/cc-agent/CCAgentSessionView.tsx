@@ -1642,12 +1642,14 @@ export function CCAgentSessionView({
     retryLastError,
     continueAfterSilentStop,
     errorReason,
+    toolLoop,
     insertSystemCard,
     updateSystemCardData,
     error,
     usageLimitRecovery,
     errorIsRecoverable,
     errorRetryText,
+    disposedErrorPersistId,
     credentialSwitchWait,
     continuationInFlightClientId,
     continuationTurnClientId,
@@ -1933,8 +1935,13 @@ export function CCAgentSessionView({
   }, [markCurrentUnreadFailedScheduleRun]);
   const errorTailMsg = useMemo(() => {
     const last = messages.length > 0 ? messages[messages.length - 1] : undefined;
-    return last && last.role === 'error' && !last.errorDismissed ? last : null;
-  }, [messages]);
+    return last &&
+      last.role === 'error' &&
+      !last.errorDismissed &&
+      last.clientId !== disposedErrorPersistId
+      ? last
+      : null;
+  }, [disposedErrorPersistId, messages]);
   // 队列里已有合成续跑项 = 用户已点过继续/重试、只是尚未被接受落库(排队被挡 /
   // 凭证切换等待):视为已推进,banner 抑制(review P2)—— 本地 hidden 态在重挂/
   // 重载后丢失,只看 messages 尾部时旧 error 行仍在,banner 会重现并允许对同一
@@ -4659,6 +4666,7 @@ export function CCAgentSessionView({
                 <ErrorTailErrorBanner
                   errorText={errorTailText}
                   errorReason={errorTailMsg?.errorReason}
+                  toolLoop={errorTailMsg?.toolLoop}
                   onContinue={handleErrorTailContinue}
                   onDismiss={handleErrorTailDismiss}
                   onSilentStopContinue={handleSilentStopContinue}
@@ -4718,6 +4726,7 @@ export function CCAgentSessionView({
               <ErrorBanner
                 error={error}
                 errorReason={errorReason}
+                toolLoop={toolLoop}
                 isRecoverable={errorIsRecoverable}
                 retryText={errorRetryText}
                 onRetry={handleRetry}

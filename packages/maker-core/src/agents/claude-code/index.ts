@@ -767,7 +767,7 @@ const CLAUDE_EFFORTS: EffortDescriptor[] = [
   { id: 'medium', displayName: 'Medium',     description: 'Balanced capability and token use' },
   { id: 'high',   displayName: 'High',       description: 'High capability for complex work' },
   { id: 'xhigh',  displayName: 'Extra High', description: 'Extended capability for long-horizon work' },
-  { id: 'max',    displayName: 'Max',        description: 'Maximum capability with unconstrained token use' },
+  { id: 'max',    displayName: 'Maximum',   description: 'Maximum capability with unconstrained token use' },
 ];
 
 // 注: plan 不再作为权限档暴露 —— 计划模式已独立成 Capabilities.planMode 一级开关
@@ -4731,14 +4731,28 @@ export class ClaudeCodeAgent extends BaseAgent {
                 getToolLoopGuard(parentToolUseId)?.onToolUse(id, toolName, input);
                 clearUpstreamResponseIdle();
               },
-              onToolResultDone: (id: string, output: string, parentToolUseId?: string) => {
+              onToolResultDone: (
+                id: string,
+                output: string,
+                parentToolUseId?: string,
+                isError?: boolean,
+                toolResultBatchId?: string,
+              ) => {
                 pendingToolIds.delete(id);
                 if (turnInFlight) {
-                  const verdict = getToolLoopGuard(parentToolUseId)?.onToolResult(id, output);
+                  const verdict = getToolLoopGuard(parentToolUseId)?.onToolResult(
+                    id,
+                    output,
+                    isError === true,
+                    toolResultBatchId,
+                  );
                   if (verdict?.kind === 'hard') {
                     const loopHint = verdict.reason === 'consecutive'
                       ? `连续 ${verdict.count} 次发起完全相同的 ${verdict.toolName} 调用`
-                      : `最近 ${verdict.count} 次工具调用一直在极少数几种(含 ${verdict.toolName})之间反复打转`;
+                      : verdict.reason === 'contract'
+                        ? `连续 ${verdict.count} 次 ${verdict.toolName} 调用因同类参数错误`
+                          + `(${verdict.contractCategory ?? 'contract'})被拒`
+                        : `最近 ${verdict.count} 次工具调用一直在极少数几种(含 ${verdict.toolName})之间反复打转`;
                     // 报错归属:sidechain 命中时报 subagent 实际模型,不冤枉会话模型。
                     const loopModel = toolLoopGuardModelForScope(parentToolUseId);
                     // 与 upstream-idle watchdog 同款兜底: tool-loop 中断 = "整个 turn 序列已死",
@@ -4766,6 +4780,10 @@ export class ClaudeCodeAgent extends BaseAgent {
                           `已完成的 tool result 都保留。`,
                         isTerminal: true,
                         reason: 'tool_use_loop_detected',
+                        toolLoop: {
+                          kind: verdict.reason,
+                          count: verdict.count,
+                        },
                         loopKind: verdict.reason,
                         loopCount: verdict.count,
                         model: loopModel,
