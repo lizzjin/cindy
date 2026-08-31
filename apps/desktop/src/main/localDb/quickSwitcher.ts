@@ -30,9 +30,9 @@ export async function listQuickSwitcherCatalog(
       userSendAt: sessions.userSendAt,
       updatedAt: sessions.updatedAt,
       createdAt: sessions.createdAt,
-      // Grouping only needs to distinguish drafts from tasks with messages. This
-      // indexed existence probe never reads content or counts a task's history.
-      hasMessages: sql<number>`exists(select 1 from messages where session_id = ${sessions.id} and rewind_at is null)`,
+      // Grouping uses all physical messages, including rewound rows, just like
+      // sessions:list/get. This indexed probe neither reads content nor counts history.
+      hasMessages: sql<number>`exists(select 1 from messages where session_id = ${sessions.id})`,
     })
     .from(sessions)
     .where(
