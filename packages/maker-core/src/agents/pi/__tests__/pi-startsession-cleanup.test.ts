@@ -2527,7 +2527,7 @@ describe('PiAgent.startSession failure cleanup (mocked pi process)', () => {
     const removalGate = new Promise<void>((resolve) => { releaseRemoval = resolve; });
     let removalReleased = false;
     let staleRemovalCount = 0;
-    let batchYieldObservedAt: number | undefined;
+    let firstSweepYieldObservedAt: number | undefined;
     const unblockRemoval = (): void => {
       if (removalReleased) return;
       removalReleased = true;
@@ -2536,8 +2536,11 @@ describe('PiAgent.startSession failure cleanup (mocked pi process)', () => {
     const rmSpy = vi.spyOn(fs, 'rm').mockImplementation(async (target, options) => {
       if (staleHomeKeys.has(path.resolve(String(target)))) {
         staleRemovalCount += 1;
-        if (staleRemovalCount === 8) {
-          setTimeout(() => { batchYieldObservedAt = staleRemovalCount; }, 0);
+        if (staleRemovalCount === 1) {
+          // Observe live progress when timers next get a turn. The sweep budget is
+          // over inspected entries, not removals: an active/markerless home may
+          // make this value lower than 8, but it must never exceed the budget.
+          setTimeout(() => { firstSweepYieldObservedAt = staleRemovalCount; }, 0);
         }
         announceRemovalStarted();
         await removalGate;
@@ -2563,7 +2566,9 @@ describe('PiAgent.startSession failure cleanup (mocked pi process)', () => {
       unblockRemoval();
       handle = await startPromise;
       await waitFor(() => staleHomes.every((home) => !existsSync(home)));
-      await vi.waitFor(() => expect(batchYieldObservedAt).toBe(8));
+      await vi.waitFor(() => expect(firstSweepYieldObservedAt).toBeDefined());
+      expect(firstSweepYieldObservedAt).toBeGreaterThanOrEqual(1);
+      expect(firstSweepYieldObservedAt).toBeLessThanOrEqual(8);
     } finally {
       unblockRemoval();
       handle ??= await startPromise;
