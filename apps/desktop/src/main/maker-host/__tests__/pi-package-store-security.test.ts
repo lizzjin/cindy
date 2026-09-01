@@ -619,7 +619,13 @@ describe('Pi package executable-code boundary', () => {
   });
 
   it('collects startup metadata without copying native packages into a session snapshot', async () => {
-    const { root } = await createSkillOnlyPackage('npm:native-startup-metadata');
+    const { root, source } = await createSkillOnlyPackage('npm:native-startup-metadata');
+    const aliasParent = await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-pi-package-security-alias-'));
+    roots.push(aliasParent);
+    const aliasRoot = path.join(aliasParent, 'package-link');
+    await fs.symlink(root, aliasRoot, process.platform === 'win32' ? 'junction' : 'dir');
+    runtime.listOutput = `User packages:\n  ${source}\n    ${aliasRoot}\n`;
+    const canonicalRoot = await fs.realpath(aliasRoot);
     const store = await import('../pi-package-store.js');
     const copySpy = vi.spyOn(fs, 'copyFile');
     try {
@@ -627,12 +633,12 @@ describe('Pi package executable-code boundary', () => {
         startupTraceId: '0123456789abcdef',
       })).resolves.toMatchObject({
         skills: [expect.objectContaining({
-          path: path.join(root, 'skills', 'managed-skill', 'SKILL.md'),
+          path: path.join(canonicalRoot, 'skills', 'managed-skill', 'SKILL.md'),
         })],
-        packageRoots: [root],
+        packageRoots: [canonicalRoot],
       });
       expect(copySpy).not.toHaveBeenCalled();
-      await expect(store.resolveManagedPiNativePackagePaths()).resolves.toEqual([root]);
+      await expect(store.resolveManagedPiNativePackagePaths()).resolves.toEqual([aliasRoot]);
     } finally {
       copySpy.mockRestore();
     }
