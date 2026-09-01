@@ -644,7 +644,16 @@ interface CodexAuthState {
   expiresAt?: number;
   errorReason?: string;
   authSource?: 'oauth' | 'api-key';
+  oauthWritesBlocked?: boolean;
   credentialScope?: 'system-shared' | 'instance-isolated' | 'unknown';
+  credentialDiagnostics?: {
+    linkType: 'symlink' | 'hardlink' | 'file' | 'missing' | 'dangling-symlink' | 'unknown';
+    healthy: boolean;
+    devReadOnly: boolean;
+    systemAuthMtimeMs?: number;
+    systemAuthLinkCount?: number;
+    orphanRepair?: 'none' | 'relinked' | 'failed';
+  };
   recoveryRequiredReason?: string;
 }
 
@@ -920,9 +929,9 @@ interface UpdateStatusPayload {
   status: 'idle' | 'checking' | 'downloading' | 'ready' | 'superseding' | 'error';
   version?: string;
   progress?: number;
-  /** Machine-readable error subtype. 'translocated' = macOS App Translocation
-   *  blocked the relaunch; renderer shows a fallback dialog instead of
-   *  silently quitting into a broken state. */
+  /** Machine-readable error subtype. `windows_vc_runtime_missing` keeps a
+   *  staged patch ready while the renderer prompts for the updater's x64
+   *  VC++ Runtime; `translocated` is the macOS read-only fallback. */
   errorCode?: string;
 }
 
