@@ -2980,7 +2980,14 @@
           "toggleFailed": "Failed to toggle browser automation",
           "openedForLogin": "Automation browser opened — sign into the sites you need",
           "openForLoginFailed": "Failed to open the browser",
-          "foreignInstance": "Another Cindy window is already using the agent browser. Quit the other instance and try again."
+          "foreignInstance": "Another Cindy window is already using the agent browser. Quit the other instance and try again.",
+          "profileLocked": "Quit Chrome, Edge, or Brave completely (including its tray icon), then try again.",
+          "noChromium": "Chrome, Edge, Brave, or Chromium could not be found on this computer.",
+          "noAuthDb": "No browser login data was found to copy. Sign in to your regular browser first, or turn off “Use my browser logins” and sign in to the agent browser.",
+          "copyFailed": "Couldn’t copy your browser logins. Quit your regular browser completely and try again, or turn off “Use my browser logins.”",
+          "headlessForbidden": "Your browser logins can’t be used while the agent browser is running in headless mode.",
+          "stopFailed": "Close the agent browser completely, then try again.",
+          "appBoundEncryptionUnsupported": "Windows protects these browser logins with App-Bound Encryption, so Cindy can’t copy them. Turn off “Use my browser logins,” open the agent browser, and sign in there once."
         },
         "openForLogin": "Open agent browser",
         "openForLoginHint": "This is a dedicated browser for agents: it runs on your installed Chrome but with a separate profile (shown as “Cindy”), so it never touches your everyday Chrome's tabs, bookmarks, or logins. Agents open pages, read, click, and take screenshots here on your behalf. For sites that need a login, click “Open agent browser” above and sign in once — your session is kept, so the agent can keep acting as you afterward."
@@ -3688,6 +3695,28 @@
       "recording": "Press new shortcut…",
       "editAria": "Change shortcut for {{name}}",
       "workLouderCodex": {
+        "codexGuard": {
+          "title": "Codex compatibility",
+          "label": "Prevent Codex from occupying the device",
+          "aria": "Prevent Codex from occupying Codex Micro",
+          "recover": "Restore environment",
+          "status": {
+            "unsupported": "macOS only",
+            "disabled": "Off",
+            "protecting": "Restart Codex",
+            "intercepted": "Protected",
+            "recovery-required": "Recovery needed",
+            "error": "Unavailable"
+          },
+          "descriptions": {
+            "unsupported": "This protection is available on macOS only.",
+            "disabled": "While Cindy is running, stop Codex from connecting to Codex Micro. Cindy itself is not restricted.",
+            "protecting": "Protection is ready. Completely quit and reopen Codex; an already-running Codex is unaffected.",
+            "intercepted": "Codex's Work Louder service was blocked. Cindy can keep using the device.",
+            "recovery-required": "Protection stopped, but NODE_OPTIONS has not been safely restored. Retry the recovery before enabling it again.",
+            "error": "Cindy could not update Codex protection. Your previous NODE_OPTIONS value was preserved or queued for recovery."
+          }
+        },
         "commands": {
           "session.selectPrevious": {
             "name": "Previous task",
@@ -5412,7 +5441,8 @@
     "browserWaiting": "Complete verification in your browser",
     "browserCallback": {
       "successTitle": "Signed in",
-      "successBody": "You can close this page and return to {{appName}}.",
+      "successBody": "You’re signed in. You can close this page now.",
+      "closeCountdown": "Closing in {{count}}s",
       "errorTitle": "Sign-in not completed",
       "errorBody": "Please return to {{appName}} and sign in again.",
       "returnButton": "Return to {{appName}}"
@@ -5963,6 +5993,10 @@
       "detachDevice": "Detach Device",
       "startDevice": "Start Device",
       "stopDevice": "Stop Device",
+      "deleteDevice": "Delete Device",
+      "deleteDeviceConfirmTitle": "Delete {{device}}?",
+      "deleteDeviceConfirmDescription": "This permanently deletes the simulator and all apps, accounts, and data stored on it. This cannot be undone.",
+      "deleteRunningDeviceConfirmDescription": "This simulator is running. Cindy will clean up its resources, stop it, and then permanently delete all apps, accounts, and data stored on it. This cannot be undone.",
       "attachedDescription": "This device is bound to the current Cindy session.",
       "agentControlTitle": "Agent Control",
       "agentControlDescription": "Agents can start, stop, or interact with this device only when allowed.",
@@ -7290,7 +7324,7 @@
         "title": "This model can't fit the current conversation",
         "warnToast": "This conversation already uses {{used}} — about {{pct}}% of the new model's {{total}} capacity",
         "overflowDescription": "This conversation already uses {{used}}, more than the new model can hold ({{total}}, about {{pct}}%). If you switch, Cindy will make a short summary and continue. Your chat history stays; it just won't all be passed through verbatim.",
-        "overflowDescriptionRemote": "This conversation already uses {{used}}, more than the new model can hold ({{total}}, about {{pct}}%). On a remote session Cindy cannot rebuild a fresh agent context, so the next request may still fail. You can switch anyway, or keep this model.",
+        "overflowDescriptionRemote": "This remote task already uses {{used}} / {{total}} of the smaller model's context (about {{pct}}%), so Cindy cannot switch safely. Keep the current model or start a new task before choosing this model.",
         "confirmSwitch": "Switch and continue",
         "cancelSwitch": "Keep this model"
       },
@@ -7471,7 +7505,7 @@
     "openApp": "Open ChatGPT App",
     "relogin": "Sign In to ChatGPT Again",
     "reloginRiskTitle": "Still sign in through Cindy?",
-    "reloginRiskDescription": "This creates a new OpenAI OAuth authorization and may immediately sign the ChatGPT App and Codex CLI out on this computer. You will need to sign in to those apps again afterward.",
+    "reloginRiskDescription": "Cindy will create a new OpenAI OAuth authorization. The ChatGPT App is usually unaffected; if it still shares credentials with system Codex, those apps may ask you to sign in again.",
     "reloginRiskConfirm": "Accept Risk and Continue",
     "devWriteBlocked": "Development builds use this computer’s ChatGPT sign-in read-only by default and cannot start OAuth or change its credentials. To test OAuth, use an isolated sandbox and explicitly set XDT_ALLOW_DEV_OAUTH_WRITE=1.",
     "devReadOnly": "Read-only in Development",
@@ -7659,7 +7693,7 @@
       "switchClaudeSubscriptionTitle": "Switch this session to the Claude.ai subscription and retry",
       "switchingClaudeSubscription": "Switching to Claude.ai…",
       "claudeSubscriptionSwitchFailed": "Couldn’t switch to Claude.ai or retry this session: {{msg}}",
-      "budgetModelHint": "If this keeps failing, try switching to the standard GPT model.",
+      "codexAppServerRetired": "The Codex service was restarted or replaced. The current request was interrupted; run it again.",
       "codexAuthMissing": "Remote Codex hasn't been signed in yet (401 Unauthorized). Click \"Sync auth\" to push your local Codex credentials to the remote Cindy Codex home, then retry.",
       "codexAuthMissingLocal": "Codex credentials missing or expired (401 Unauthorized). Re-login in {{appName}} Settings → Codex (the app-server will auto-restart on login), or run `codex login` in your terminal and toggle the auth mode in Settings once to restart the app-server. Then start a new session.",
       "codexSessionExpired": "The OpenAI connection needs an update. Reconnect ChatGPT to continue; {{appName}} won’t sign your system Codex CLI out or ask you to reconnect other model sources.",
